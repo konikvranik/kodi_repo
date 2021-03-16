@@ -9,6 +9,6 @@
   <extension point="xbmc.service" library="service.py" />
   <extension point="xbmc.addon.metadata">
     <platform>all</platform>
-    <summary lang="en"></summary>
+    <summary lang="en"/>
   </extension>
 </addon>
