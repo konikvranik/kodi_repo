@@ -2,10 +2,10 @@
 <addons>
 <addon id="service.hdmi_cec_server"
        name="HDMI CEC server"
-       version="0.0.2"
+       version="0.0.3"
        provider-name="">
     <requires>
-        <import addon="xbmc.python" version="2.24.0"/>
+        <import addon="xbmc.python" version="3.0.0"/>
     </requires>
     <extension point="xbmc.service" library="service.py"/>
     <extension point="xbmc.addon.metadata">
