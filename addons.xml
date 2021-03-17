@@ -2,7 +2,7 @@
 <addons>
 <addon id="service.hdmi_cec_server"
        name="HDMI CEC server"
-       version="0.0.1"
+       version="0.0.3"
        provider-name="">
     <requires>
         <import addon="xbmc.python" version="2.24.0"/>
@@ -12,7 +12,7 @@
         <platform>all</platform>
         <summary lang="en"/>
     </extension>
-    <news>0.0.1: Development revision</news>
+    <news>0.0.2: Development revision</news>
 </addon>
 
 <addon id="repository.konikvranik" name="konikvranik Repo" version="1.0.0" provider-name="konikvranik">
