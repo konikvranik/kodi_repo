@@ -1,6 +1,5 @@
 import time
 import xbmc
-import pycec
 
 import asyncio
 import configparser
@@ -16,7 +15,7 @@ from pycec import _LOGGER
 from pycec.network import HDMINetwork
 
 
-async def async_show_devices(network, loop):
+def async_show_devices(network, loop):
     while True:
         for d in network.devices:
             _LOGGER.debug("Present device %s", d)
