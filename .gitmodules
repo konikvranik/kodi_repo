@@ -1,0 +1,3 @@
+[submodule "script.json-cec"]
+	path = script.json-cec
+	url = git@github.com:konikvranik/script.json-cec.git
