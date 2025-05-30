@@ -5,3 +5,4 @@ plugins:
 title: konikvranik Kodi repository
 description: My Kodi addons.
 show_downloads: true
+show_dir_listing: true
