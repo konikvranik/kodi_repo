@@ -2,3 +2,5 @@
 	path = repo/service.cec.server
 	url = git@github.com:konikvranik/pycec.git
 	branch = master
+[submodule "service.cec.server"]
+	branch = pyCEC-82
