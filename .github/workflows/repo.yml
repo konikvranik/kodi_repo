@@ -3,7 +3,16 @@ name: Update Modules
 on:
   repository_dispatch:
     types: update
-
+  workflow_dispatch:
+    inputs:
+      module:
+        description: 'Název modulu'
+        required: true
+        default: 'general'
+      tag:
+        description: 'Verze (tag)'
+        required: true
+        default: 'N/A'
 jobs:
   update:
     runs-on: ubuntu-latest
