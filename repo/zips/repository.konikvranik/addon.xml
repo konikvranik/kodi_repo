@@ -23,10 +23,10 @@
 	<extension point="xbmc.addon.metadata">
 		<summary>Kodi addons by konikvranik</summary>
 		<description>Kodi addon for HDMI CEC server based on pyCEC.</description>
-		<disclaimer/>
+		<disclaimer></disclaimer>
 		<platform>all</platform>
-		<addets>
+		<assets>
 			<icon>icon.png</icon>
-		</addets>
+		</assets>
 	</extension>
 </addon>

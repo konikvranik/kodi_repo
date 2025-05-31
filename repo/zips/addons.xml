@@ -16,9 +16,9 @@
 		<description>Kodi addon for HDMI CEC server based on pyCEC.</description>
 		<disclaimer />
 		<platform>all</platform>
-		<addets>
+		<assets>
 			<icon>icon.png</icon>
-		</addets>
+		</assets>
 	</extension>
 </addon><addon id="service.cec.server" name="CEC TCP Server" version="1.0.0" provider-name="VášJméno">
 	<requires>
