@@ -9,6 +9,11 @@
 			<checksum>https://konikvranik.github.io/kodi_repo/repo/zips/addons.xml.md5</checksum>
 			<datadir zip="true">https://konikvranik.github.io/kodi_repo/repo/zips/</datadir>
 		</dir>
+		<dir minversion="19.9.1">
+			<info compressed="false">https://konikvranik.github.io/kodi_repo/matrix/zips/addons.xml</info>
+			<checksum>https://konikvranik.github.io/kodi_repo/matrix/zips/addons.xml.md5</checksum>
+			<datadir zip="true">https://konikvranik.github.io/kodi_repo/matrix/zips/</datadir>
+		</dir>
 	</extension>
 	<extension point="xbmc.addon.metadata">
 		<summary>Kodi addons by konikvranik</summary>
