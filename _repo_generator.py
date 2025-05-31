@@ -157,7 +157,7 @@ class Generator:
             if self._generate_md5_file(addons_xml_path, md5_path):
                 print("Successfully updated {}".format(color_text(md5_path, 'yellow')))
 
-        self._generate_index_file(self.release_path)
+        self._generate_index_file(self.release_path, ["zips"])
         self._generate_index_file(self.zips_path)
 
     def _remove_binaries(self):
@@ -347,9 +347,9 @@ class Generator:
                     )
                 )
 
-    def _generate_index_file(self, index_html_path):
+    def _generate_index_file(self, index_html_path, listing=None):
         entries = []
-        for i in os.listdir(index_html_path):
+        for i in listing if listing else os.listdir(index_html_path):
             full_path = os.path.join(index_html_path, i)
             name = i + "/" if os.path.isdir(full_path) else i
             entries.append(f'<a href="{name}">{name}</a>')
