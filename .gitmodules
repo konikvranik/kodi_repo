@@ -1,4 +1,4 @@
 [submodule "matrix/service.cec.server"]
 	path = matrix/service.cec.server
 	url = git@github.com:konikvranik/pycec.git
-	branch = pyCEC-82
+	branch = master
