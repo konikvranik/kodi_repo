@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="repository.konikvranik-alpha" name="konikvranik α Repo" version="0.0.1-α" provider-name="konikvranik">
+<addon id="repository.konikvranik-alpha" name="konikvranik α Repo" version="0.0.0-α" provider-name="konikvranik">
 	<extension point="xbmc.addon.repository" name="konikvranik α Repo">
 		<dir>
 			<info compressed="false">https://raw.githubusercontent.com/konikvranik/kodi_repo/alpha/repo/zips/addons.xml</info>
