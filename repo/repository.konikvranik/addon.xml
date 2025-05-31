@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="repository.konikvranik" name="konikvranik Repo" version="1.0.0" provider-name="konikvranik">
+<addon id="repository.konikvranik" name="konikvranik Repo" version="0.0.1-α" provider-name="konikvranik">
 	<extension point="xbmc.addon.repository" name="konikvranik Repo">
 		<dir>
 			<info compressed="false">https://raw.githubusercontent.com/konikvranik/kodi_repo/alpha/repo/zips/addons.xml</info>
@@ -13,7 +13,7 @@
 		</dir>
 	</extension>
 	<extension point="xbmc.addon.metadata">
-		<summary>Kodi addons by konikvranik</summary>
+		<summary>α Kodi addons by konikvranik</summary>
 		<description>Kodi addon for HDMI CEC server based on pyCEC.</description>
 		<disclaimer/>
 		<platform>all</platform>
