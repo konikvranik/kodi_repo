@@ -1,12 +1,12 @@
 
 Welcome to the official *konikvranik* [Kodi](https://kodi.tv) addon repository.
 
-This repository hosts `service.cec.server` ([matrix/zips/service.cec.server/](matrix/zips/service.cec.server/)) addon that allows sending HDMI-CEC commands over a network to the CEC interface to which the Kodi instance is connected. It's based on the [pyCEC Kodi](/konikvranik/pyCEC) library.
+This repository hosts `service.cec.server` ([matrix/zips/service.cec.server/](matrix/zips/service.cec.server/)) addon that allows sending HDMI-CEC commands over a network to the CEC interface to which the Kodi instance is connected. It's based on the [pyCEC Kodi](/pyCEC) library.
 
 
 ## 📦 Repository URL
 
-https://konikvranik.github.io/kodi_repo/
+[https://konikvranik.github.io/kodi_repo/](https://konikvranik.github.io/kodi_repo/)
 
 ## 🧭 How to Add This Repository to Kodi
 
