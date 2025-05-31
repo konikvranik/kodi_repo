@@ -348,13 +348,19 @@ class Generator:
                 )
 
     def _generate_index_file(self, index_html_path):
-        content = """
+        entries = []
+        for i in os.listdir(index_html_path):
+            full_path = os.path.join(index_html_path, i)
+            name = i + "/" if os.path.isdir(full_path) else i
+            entries.append(f'<a href="{name}">{name}</a>')
+
+        content = f"""
 <html>
 <body>
 <h1>Directory listing</h1>
 <hr/>
 <pre>
-""" + "\n".join(["""<a href="%s">%s</a>""" % (i, i) for i in os.listdir(index_html_path)]) + """
+{chr(10).join(entries)}
 </pre>
 </body>
 </html>
