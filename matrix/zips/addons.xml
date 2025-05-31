@@ -1,0 +1,30 @@
+<?xml version='1.0' encoding='utf-8'?>
+<addons><addon id="service.cec.server" name="CEC TCP Server" version="1.0.0" provider-name="VášJméno">
+	<requires>
+		<import addon="xbmc.python" version="3.0.0" />
+	</requires>
+	<extension point="xbmc.service" library="kodi_cec.py" start="login" />
+	<extension point="xbmc.addon.metadata">
+		<summary lang="en_GB">CEC TCP Server for Kodi</summary>
+		<description lang="en_GB">Provides a TCP server to send and receive CEC commands to HDMI devices connected to
+			Kodi.
+		</description>
+		<platform>all</platform>
+		<language>en</language>
+		<license>MIT</license>
+		<assets>
+			<icon>resources/icon.png</icon>
+			<fanart>resources/fanart.jpg</fanart>
+		</assets>
+	</extension>
+</addon><addon id="service.hdmi_cec_server" name="HDMI CEC server" version="0.0.3" provider-name="">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0" />
+    </requires>
+    <extension point="xbmc.service" library="service.py" />
+    <extension point="xbmc.addon.metadata">
+        <platform>all</platform>
+        <summary lang="en" />
+    </extension>
+    <news>0.0.2: Development revision</news>
+</addon></addons>
