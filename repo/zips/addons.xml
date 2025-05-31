@@ -6,16 +6,7 @@
 			<checksum>https://konikvranik.github.io/kodi_repo/repo/zips/addons.xml.md5</checksum>
 			<datadir zip="true">https://konikvranik.github.io/kodi_repo/repo/zips/</datadir>
 		</dir>
-		<dir minversion="19.9.1" maxversion="20.9.0">
-			<info compressed="false">https://konikvranik.github.io/kodi_repo/nexus/zips/addons.xml</info>
-			<checksum>https://konikvranik.github.io/kodi_repo/nexus/zips/addons.xml.md5</checksum>
-			<datadir zip="true">https://konikvranik.github.io/kodi_repo/nexus/zips/</datadir>
-		</dir>
-		<dir minversion="20.9.1">
-			<info compressed="false">https://konikvranik.github.io/kodi_repo/omega/zips/addons.xml</info>
-			<checksum>https://konikvranik.github.io/kodi_repo/omega/zips/addons.xml.md5</checksum>
-			<datadir zip="true">https://konikvranik.github.io/kodi_repo/omega/zips/</datadir>
-		</dir>
+		
 	</extension>
 	<extension point="xbmc.addon.metadata">
 		<summary>Kodi addons by konikvranik</summary>
