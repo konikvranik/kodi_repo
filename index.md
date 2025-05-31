@@ -55,7 +55,7 @@ This repository welcomes contributions! If you have ideas, bug reports, or your 
 For early access to work-in-progress or experimental add-ons, you can manually install the **alpha version** of the repository:
 
 - Download the zip file:
-  https://raw.githubusercontent.com/konikvranik/kodi_repo/alpha/repo/zips/repository.konikvranik/repository.konikvranik-0.0.1-α.zip
+  [https://raw.githubusercontent.com/konikvranik/kodi_repo/alpha/repo/zips/repository.konikvranik/repository.konikvranik-0.0.1-α.zip](https://raw.githubusercontent.com/konikvranik/kodi_repo/alpha/repo/zips/repository.konikvranik/repository.konikvranik-0.0.1-α.zip)
 
 - Install it in Kodi:
 1. Open Kodi.
