@@ -13,8 +13,14 @@ on:
         description: 'Verze (tag)'
         required: true
         default: 'N/A'
+  push:
+    branches:
+      - main
+      - alpha
+
 jobs:
   update:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -34,8 +40,8 @@ jobs:
       - name: Update Submodules
         run: |
           git submodule update --init --recursive --checkout --remote -f
-          git config --global user.name "GitHub Action"
-          git config --global user.email "noreply@github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@github.com"
       - name: Repo Generator
         run: python ./_repo_generator.py
       - name: Commit packages
