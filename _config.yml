@@ -3,7 +3,7 @@ plugins:
   - jekyll-remote-theme
 
 title: konikvranik Kodi repository
-description: My Kodi addons.
+description: konikvranik's Kodi addons.
 show_downloads: true
 show_dir_listing: true
 include: [ "repo/zips/**" ]

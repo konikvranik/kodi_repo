@@ -1,3 +1,7 @@
+This repository contains `service.cec.server` ([matrix/zips/service.cec.server/](matrix/zips/service.cec.server/) addon that allows sending HDMI-CEC commands over a network to the CEC interface to which the Kodi instance is connected. It's based on the [pyCEC Kodi](/konikvranik/pyCEC) library.
+
+
+
 # Directory listing
 
 ---
