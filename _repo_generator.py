@@ -98,7 +98,7 @@ def _setup_colors():
             os.environ.get("TERM_PROGRAM") == "vscode",
             vt_codes_enabled_in_windows_registry(),
             legacy_support(),
-            ]
+        ]
     )
 
 
@@ -157,6 +157,9 @@ class Generator:
             if self._generate_md5_file(addons_xml_path, md5_path):
                 print("Successfully updated {}".format(color_text(md5_path, 'yellow')))
 
+        self._generate_index_file(self.release_path)
+        self._generate_index_file(self.zips_path)
+
     def _remove_binaries(self):
         """
         Removes any and all compiled Python files before operations.
@@ -205,7 +208,8 @@ class Generator:
         if not os.path.exists(zip_folder):
             os.makedirs(zip_folder)
 
-        final_zip = os.path.join(zip_folder, "{0}-{1}.zip".format(addon_id, version))
+        zip_name = "{0}-{1}.zip".format(addon_id, version)
+        final_zip = os.path.join(zip_folder, zip_name)
         if not os.path.exists(final_zip):
             zip = zipfile.ZipFile(final_zip, "w", compression=zipfile.ZIP_DEFLATED)
             root_len = len(os.path.dirname(os.path.abspath(addon_folder)))
@@ -319,12 +323,14 @@ class Generator:
                     # Create the zip files
                     self._create_zip(addon, id, version)
                     self._copy_meta_files(addon, os.path.join(self.zips_path, id))
+
             except Exception as e:
                 print(
                     "Excluding {}: {}".format(
                         color_text(addon, 'yellow'), color_text(e, 'red')
                     )
                 )
+            self._generate_index_file(os.path.join(self.zips_path, id))
 
         if changed:
             addons_root[:] = sorted(addons_root, key=lambda addon: addon.get('id'))
@@ -340,6 +346,22 @@ class Generator:
                         color_text(addons_xml_path, 'yellow'), color_text(e, 'red')
                     )
                 )
+
+    def _generate_index_file(self, index_html_path):
+        content = """
+<html>
+<body>
+<h1>Directory listing</h1>
+<hr/>
+<pre>
+""" + "\n".join(["""<a href="%s">%s</a>""" % (i, i) for i in os.listdir(index_html_path)]) + """
+</pre>
+</body>
+</html>
+"""
+        self._save_file(content, file="%s/index.html" % index_html_path)
+
+        return True
 
     def _generate_md5_file(self, addons_xml_path, md5_path):
         """
