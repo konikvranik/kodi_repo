@@ -47,9 +47,11 @@ PUBLIC = ("org.wfa.wfd1.0, OPTIONS, DESCRIBE, GET_PARAMETER, PAUSE, "
 # bit 0x1 (48 kHz/2ch), jinak zdroj audio vubec nevybere. Video: H264
 # baseline profil (0x01), level 0x10, CEA maska 0001FFFF (az 1080p60),
 # VESA/HH masky z funkcniho lazycast retezce.
+# Audio: AAC (g-n-d) i LPCM (Windows / starsi g-n-d) - zdroj si vybere,
+# Kodi prehraje oboji (MPEG-TS nese audio tak jak je).
 CAPABILITIES = (
     "wfd_client_rtp_ports: RTP/AVP/UDP;unicast %d %d mode=play\r\n"
-    "wfd_audio_codecs: AAC 00000001 00\r\n"
+    "wfd_audio_codecs: AAC 00000001 00, LPCM 00000002 00\r\n"
     "wfd_video_formats: 00 00 01 10 0001FFFF 3FFFFFFF 00000FFF 00 0000"
     " 0000 00 none none\r\n" % (RTP_PORT, RTCP_PORT))
 
