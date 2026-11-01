@@ -39,6 +39,7 @@ ADDON = xbmcaddon.Addon()
 # bez toho selhávají open()/os.makedirs na state a report (Errno 13
 # 'special:', pozorováno 1. 11. 2026)
 PROFILE = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
+BACKUPS_DIR = os.path.join(PROFILE, 'nfo-backups')
 STATE_FILE = os.path.join(PROFILE, 'state.json')
 MARKER_FILE = os.path.join(PROFILE, 'repair-all.request')
 REPORT_FILE = os.path.join(PROFILE, 'repair-all.report')
@@ -141,7 +142,12 @@ def vbasename(path):
 def vfs_read(path):
     fh = xbmcvfs.File(path, 'r')
     try:
-        return fh.read()
+        data = fh.readBytes()
+        if isinstance(data, str):
+            return data
+        # nektere .nfo na NAS nejsou validni UTF-8 (Windows-1250) -
+        # pro hledani id/URL staci lossy dekodovani
+        return bytes(data or b'').decode('utf-8', 'replace')
     finally:
         fh.close()
 
@@ -152,6 +158,24 @@ def vfs_write(path, content):
         return fh.write(content)
     finally:
         fh.close()
+
+
+def backup_nfo(nfo_path):
+    # Záloha původního .nfo na LOKÁLNÍ disk (profil addonu). Přes NFS
+    # xbmcvfs.copy zakládá nové soubory s mode 000 a nulovou délkou
+    # (QNAP NFS4 + libnfs, pozorováno 1. 11. 2026) - takový soubor pak
+    # nejde přepsat a zůstává k ničemu. Lokálně je to čisté ext4.
+    match = re.search(r'/Public/(.*)$', nfo_path, re.I)
+    relative = match.group(1) if match else vfilename(nfo_path)
+    dest = os.path.join(BACKUPS_DIR, relative)
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, 'wb') as out:
+            out.write(vfs_read(nfo_path).encode('utf-8'))
+        return True
+    except Exception as err:
+        log('záloha %s selhala: %s' % (nfo_path, err), xbmc.LOGWARNING)
+        return False
 
 
 def movie_nfo_candidates(file_path):
@@ -245,7 +269,7 @@ def repair_movie_nfo(movie):
     ids = extract_ids(text)
     if not ids:
         return 'no-id'
-    xbmcvfs.copy(nfo_path, nfo_path + '.arr-backup')
+        backup_nfo(nfo_path)
     if not vfs_write(nfo_path, identity_xml('movie', ids)):
         return 'write-failed'
     log('movie "%s": %s -> identita' % (movie.get('title'), nfo_path))
@@ -260,7 +284,7 @@ def repair_episode_nfo(episode):
                      if xbmcvfs.exists(c)), None)
     if not nfo_path:
         return 'no-nfo'
-    xbmcvfs.copy(nfo_path, nfo_path + '.arr-backup')
+        backup_nfo(nfo_path)
     if not xbmcvfs.delete(nfo_path):
         return 'delete-failed'
     return 'deleted'
@@ -276,7 +300,7 @@ def repair_show_nfo(show, episode_files):
         ids = extract_ids(text)
         if not ids:
             return 'no-id'
-        xbmcvfs.copy(nfo_path, nfo_path + '.arr-backup')
+        backup_nfo(nfo_path)
         if not vfs_write(nfo_path, identity_xml('tvshow', ids)):
             return 'write-failed'
         log('tvshow "%s": %s -> identita' % (show.get('title'), nfo_path))
@@ -447,12 +471,15 @@ def repair_all(monitor, opts):
                              ['title', 'file', 'rating']):
         if not matches(movie.get('title')):
             continue
-        action = repair_movie_nfo(movie)
-        if action == 'rewritten' or (action == 'identity'
-                                     and movie.get('rating') is None):
-            if monitor.refresh('movie', movie['movieid']):
-                changed = True
-        report('movie | %s | %s' % (movie.get('title'), action))
+        try:
+            action = repair_movie_nfo(movie)
+            if action == 'rewritten' or (action == 'identity'
+                                         and movie.get('rating') is None):
+                if monitor.refresh('movie', movie['movieid']):
+                    changed = True
+            report('movie | %s | %s' % (movie.get('title'), action))
+        except Exception as err:
+            report('movie | %s | chyba: %s' % (movie.get('title'), err))
 
     episodes = query_items('VideoLibrary.GetEpisodes',
                            ['title', 'showtitle', 'tvshowid', 'season',
@@ -475,21 +502,29 @@ def repair_all(monitor, opts):
         scoped = [e for e in all_eps
                   if matches(show.get('title'))
                   or matches(e.get('showtitle')) or matches(e.get('title'))]
-        action = repair_show_nfo(show, [e.get('file') or ''
-                                        for e in scoped])
-        if action == 'rewritten' or (action == 'identity'
-                                     and show.get('rating') is None):
-            if monitor.refresh('tvshow', show_id):
-                changed = True
-        report('tvshow | %s | %s' % (show.get('title'), action))
+        try:
+            action = repair_show_nfo(show, [e.get('file') or ''
+                                            for e in scoped])
+            if action == 'rewritten' or (action == 'identity'
+                                         and show.get('rating') is None):
+                if monitor.refresh('tvshow', show_id):
+                    changed = True
+            report('tvshow | %s | %s' % (show.get('title'), action))
+        except Exception as err:
+            report('tvshow | %s | chyba: %s' % (show.get('title'), err))
         for episode in scoped:
-            act = repair_episode_nfo(episode)
-            if act == 'deleted' and monitor.refresh('episode',
-                                                    episode['episodeid']):
-                changed = True
-            report('episode | %s S%02dE%02d | %s'
-                   % (episode.get('showtitle'), episode.get('season') or 0,
-                      episode.get('episode') or 0, act))
+            try:
+                act = repair_episode_nfo(episode)
+                if act == 'deleted' and monitor.refresh(
+                        'episode', episode['episodeid']):
+                    changed = True
+                report('episode | %s S%02dE%02d | %s'
+                       % (episode.get('showtitle'),
+                          episode.get('season') or 0,
+                          episode.get('episode') or 0, act))
+            except Exception as err:
+                report('episode | %s | chyba: %s'
+                       % (episode.get('showtitle'), err))
 
     monitor.wait_pending()
     if changed:
