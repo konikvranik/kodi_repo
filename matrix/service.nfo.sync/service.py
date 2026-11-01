@@ -142,7 +142,12 @@ def vbasename(path):
 def vfs_read(path):
     fh = xbmcvfs.File(path, 'r')
     try:
-        return fh.read()
+        data = fh.readBytes()
+        if isinstance(data, str):
+            return data
+        # nektere .nfo na NAS nejsou validni UTF-8 (Windows-1250) -
+        # pro hledani id/URL staci lossy dekodovani
+        return bytes(data or b'').decode('utf-8', 'replace')
     finally:
         fh.close()
 
@@ -466,12 +471,15 @@ def repair_all(monitor, opts):
                              ['title', 'file', 'rating']):
         if not matches(movie.get('title')):
             continue
-        action = repair_movie_nfo(movie)
-        if action == 'rewritten' or (action == 'identity'
-                                     and movie.get('rating') is None):
-            if monitor.refresh('movie', movie['movieid']):
-                changed = True
-        report('movie | %s | %s' % (movie.get('title'), action))
+        try:
+            action = repair_movie_nfo(movie)
+            if action == 'rewritten' or (action == 'identity'
+                                         and movie.get('rating') is None):
+                if monitor.refresh('movie', movie['movieid']):
+                    changed = True
+            report('movie | %s | %s' % (movie.get('title'), action))
+        except Exception as err:
+            report('movie | %s | chyba: %s' % (movie.get('title'), err))
 
     episodes = query_items('VideoLibrary.GetEpisodes',
                            ['title', 'showtitle', 'tvshowid', 'season',
@@ -494,21 +502,29 @@ def repair_all(monitor, opts):
         scoped = [e for e in all_eps
                   if matches(show.get('title'))
                   or matches(e.get('showtitle')) or matches(e.get('title'))]
-        action = repair_show_nfo(show, [e.get('file') or ''
-                                        for e in scoped])
-        if action == 'rewritten' or (action == 'identity'
-                                     and show.get('rating') is None):
-            if monitor.refresh('tvshow', show_id):
-                changed = True
-        report('tvshow | %s | %s' % (show.get('title'), action))
+        try:
+            action = repair_show_nfo(show, [e.get('file') or ''
+                                            for e in scoped])
+            if action == 'rewritten' or (action == 'identity'
+                                         and show.get('rating') is None):
+                if monitor.refresh('tvshow', show_id):
+                    changed = True
+            report('tvshow | %s | %s' % (show.get('title'), action))
+        except Exception as err:
+            report('tvshow | %s | chyba: %s' % (show.get('title'), err))
         for episode in scoped:
-            act = repair_episode_nfo(episode)
-            if act == 'deleted' and monitor.refresh('episode',
-                                                    episode['episodeid']):
-                changed = True
-            report('episode | %s S%02dE%02d | %s'
-                   % (episode.get('showtitle'), episode.get('season') or 0,
-                      episode.get('episode') or 0, act))
+            try:
+                act = repair_episode_nfo(episode)
+                if act == 'deleted' and monitor.refresh(
+                        'episode', episode['episodeid']):
+                    changed = True
+                report('episode | %s S%02dE%02d | %s'
+                       % (episode.get('showtitle'),
+                          episode.get('season') or 0,
+                          episode.get('episode') or 0, act))
+            except Exception as err:
+                report('episode | %s | chyba: %s'
+                       % (episode.get('showtitle'), err))
 
     monitor.wait_pending()
     if changed:
