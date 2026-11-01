@@ -42,7 +42,9 @@ RTCP_PORT = 16385
 RTSP_DEFAULT_PORT = 7236
 LOCK_FILE = "/run/lock/kiosk-stream.lock"
 RELAY_PORT = 16386
-STREAM_URL = "tcp://127.0.0.1:%d" % RELAY_PORT
+# Kodi neumí tcp:// pro playback (unsupported protocol, měřeno 1. 11.
+# 2026) - podáváme proto rtp:// na loopbacku (prokázaná cesta, PT=33)
+STREAM_URL = "rtp://127.0.0.1:%d" % RELAY_PORT
 # s: kolik streamu predlozit Kodimu pri otevreni (probe demuxeru
 # spotrebuje backlog okamzite; playback pak zacina u zive hrany).
 # Mereno: probe ~1.15 s obsahu - budget mirne nad.
@@ -81,13 +83,11 @@ def log(msg):
 
 
 class TsRelay(threading.Thread):
-    """RTP/TS prijem + TCP server pro Kodi (nizkolatencni cesta).
+    """RTP/TS prijem + RTP podavani Kodi na loopbacku.
 
-    Kodi otevre TCP az pres PlayMedia; do te doby relay sbira TS do
-    ring bufferu. Po pripojeni podava od okamziku (now - PROBE_BUDGET):
-    probe demuxeru (cca 1.2 s obsahu - IDR + audio config) probehne
-    okamzite z backlogu a prehravani zacne u (budget - probe) za zivou
-    hranou misto (cela probe) za ni.
+    Do bindu Kodi portu relay sbira TS do ring bufferu; po bindu podava
+    od okamziku (now - PROBE_BUDGET): probe demuxeru (cca 1.2 s obsahu)
+    probehne z backlogu okamzite a prehravani zacne u zive hrany.
     """
 
     def __init__(self, rtp_port):
@@ -98,11 +98,13 @@ class TsRelay(threading.Thread):
         self.span = 0.0
         self.rtp_port = rtp_port
         self.sock = None
-        self.client = None
+        self.out = None
+        self.seq = 0
+        self.rtp_ts = 0
 
     @staticmethod
     def _payload_ts(data):
-        """Vyblinka MPEG-TS z UDP datagramu (RPT i cisty TS)."""
+        """Vyblinka MPEG-TS z UDP datagramu (RTP i cisty TS)."""
         if data[:1] == b"\x47":
             return data  # cisty MPEG-TS bez RTP hlavicky
         if len(data) >= 12 and (data[0] >> 6) == 2:
@@ -117,55 +119,74 @@ class TsRelay(threading.Thread):
         with self.lock:
             return self.span
 
-    def _send(self, data):
+    def _send(self, ts):
+        """Zabali TS do RTP (PT=33 = MP2T) a posle na loopback.
+
+        Timestamp nechavame konstantni - ffmpeg MP2T pass-through ho pro
+        obsah nepouziva, dekoduje az PTS uvnitr TS.
+        """
+        self.seq = (self.seq + 1) & 0xFFFF
+        hdr = (b"\x80\x21" + self.seq.to_bytes(2, "big")
+               + self.rtp_ts.to_bytes(4, "big") + b"\x6d\x69\x63\x65")
         try:
-            self.client.sendall(data)
+            self.out.sendto(hdr + ts, ("127.0.0.1", RELAY_PORT))
             return True
         except OSError as exc:
-            log("relay: Kodi odpadl (%s)" % exc)
-            self.stop_flag.set()
+            log("relay: odeslani selhalo (%s)" % exc)
             return False
 
+    def _kodi_bound(self):
+        """Kodi uz bindnul RELAY_PORT? (/proc/net/udp, 16386 = 0x4002)."""
+        try:
+            with open("/proc/net/udp") as f:
+                next(f)
+                for line in f:
+                    parts = line.split()
+                    if len(parts) > 1 and parts[1].endswith(":4002"):
+                        return True
+        except (OSError, StopIteration, ValueError):
+            pass
+        return False
+
     def run(self):
-        srv = None
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,
                                  4 << 20)
             self.sock.bind(("0.0.0.0", self.rtp_port))
             self.sock.settimeout(0.2)
-            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            srv.bind(("127.0.0.1", RELAY_PORT))
-            srv.listen(1)
-            srv.settimeout(0.2)
+            self.out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         except OSError as exc:
             log("relay: nelze otevrit sockety: %s" % exc)
             return
-        log("relay: UDP %d -> TCP %d" % (self.rtp_port, RELAY_PORT))
+        log("relay: UDP %d -> rtp://127.0.0.1:%d"
+            % (self.rtp_port, RELAY_PORT))
 
+        kodi_ready = False
+        burst = 0
         while not self.stop_flag.is_set():
-            if self.client is None:
-                try:
-                    conn, _ = srv.accept()
-                except socket.timeout:
-                    conn = None
-                if conn is not None:
-                    conn.setsockopt(socket.IPPROTO_TCP,
-                                    socket.TCP_NODELAY, 1)
-                    conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF,
-                                    2 << 20)
-                    conn.settimeout(3.0)
-                    self.client = conn
-                    log("relay: Kodi pripojen, podavam od %.1f s"
-                        % PROBE_BUDGET_S)
+            if not kodi_ready:
+                # PlayMedia binder port az pri otevreni demuxeru; do te
+                # doby jen sbirame do ring bufferu
+                if self._kodi_bound():
+                    kodi_ready = True
                     cutoff = time.monotonic() - PROBE_BUDGET_S
                     with self.lock:
                         backlog = [ts for t, ts in self.ring
                                    if t >= cutoff]
+                    log("relay: Kodi nabindovano, backlog %d chunku"
+                        % len(backlog))
+                    # Zaklady zkroustku: burstovat max ~128 KB, pak
+                    # kratky sleep - Kodi probe cita rychle, ale kernel
+                    # rcvbuf (~200 KB) nemuze pretecit
                     for chunk in backlog:
-                        if not self._send(chunk):
+                        if self.stop_flag.is_set():
                             break
+                        self._send(chunk)
+                        burst += len(chunk)
+                        if burst >= 131072:
+                            burst = 0
+                            time.sleep(0.01)
                     continue
             try:
                 data, _ = self.sock.recvfrom(65535)
@@ -180,10 +201,10 @@ class TsRelay(threading.Thread):
                 while self.ring and now - self.ring[0][0] > RING_CAP_S:
                     self.ring.popleft()
                 self.span = now - self.ring[0][0] if self.ring else 0.0
-            if self.client is not None:
+            if kodi_ready:
                 self._send(ts)
 
-        for sock in (self.sock, srv, self.client):
+        for sock in (self.sock, self.out):
             try:
                 if sock:
                     sock.close()
@@ -193,8 +214,7 @@ class TsRelay(threading.Thread):
 
     def stop(self):
         self.stop_flag.set()
-        # odblokovat pripadne cekani v recv/accept zavrenim socketu
-        for sock in (self.sock, self.client):
+        for sock in (self.sock, self.out):
             try:
                 if sock:
                     sock.shutdown(socket.SHUT_RDWR)
