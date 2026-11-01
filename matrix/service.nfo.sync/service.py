@@ -251,6 +251,12 @@ def identity_xml(kind, ids):
         lines.append('\t<uniqueid type="tvdb">%s</uniqueid>' % ids['tvdb'])
     url = identity_url(kind, ids)
     if url:
+        if kind == 'tvshow':
+            # TV scraper bere seznam epizod pres <episodeguide> - bez
+            # nej pada na RuntimeError a show se neprescrapuje
+            lines.append('\t<episodeguide>')
+            lines.append('\t\t<url>%s</url>' % url)
+            lines.append('\t</episodeguide>')
         lines.append('\t%s' % url)
     lines.append('</%s>' % root)
     return '\n'.join(lines) + '\n'
@@ -299,7 +305,14 @@ def repair_show_nfo(show, episode_files):
             continue
         text = vfs_read(nfo_path)
         if IDENTITY_URL_RE.search(text):
-            return 'identity'
+            if '<episodeguide>' in text.lower():
+                return 'identity'
+            # stara identita bez <episodeguide> - doplnit z uniqueids
+            ids = extract_ids(text)
+            if not vfs_write(nfo_path, identity_xml('tvshow', ids)):
+                return 'write-failed'
+            log('tvshow: doplnen episodeguide do %s' % nfo_path)
+            return 'rewritten'
         ids = extract_ids(text)
         if not ids:
             return 'no-id'
