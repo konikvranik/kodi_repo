@@ -1,12 +1,14 @@
-
 Welcome to the official *konikvranik* [Kodi](https://kodi.tv) addon repository.
 
-This repository hosts `service.cec.server` ([matrix/zips/service.cec.server/](matrix/zips/service.cec.server/)) addon that allows sending HDMI-CEC commands over a network to the CEC interface to which the Kodi instance is connected. It's based on the [pyCEC Kodi](/pyCEC) library.
+## 📦 Add-ons
 
+| Add-on | Description |
+|---|---|
+| [`service.cec.server`](matrix/service.cec.server/) | Sends HDMI-CEC commands over a network to the CEC interface the Kodi instance is connected to. Based on the [pyCEC](/pyCEC) library. x86_64 only. |
+| [`service.micesink`](matrix/service.micesink/) | Miracast over Infrastructure screen sink — the kiosk advertises itself as a network display (`_display._tcp` via avahi) and plays the incoming stream in Kodi. |
+| [`service.nfo.sync`](matrix/service.nfo.sync/) | Event-driven `.nfo` sync: converts FULL Sonarr/Radarr `.nfo` files to identity form so Kodi scrapes fresh cs-CZ metadata online, repairs items without ratings and exports the library back to `.nfo`. |
 
-## 📦 Repository URL
-
-[https://konikvranik.github.io/kodi_repo/](https://konikvranik.github.io/kodi_repo/)
+The **master** branch hosts tested releases; the **alpha** branch is for experiments only.
 
 ## 🧭 How to Add This Repository to Kodi
 
@@ -44,23 +46,76 @@ This repository welcomes contributions! If you have ideas, bug reports, or your 
 
 ---
 
+## 🧪 Experimental Repository (Alpha)
+
+For early access to work-in-progress or experimental add-ons, you can install the **alpha version** of the repository from the [`alpha` branch](https://github.com/konikvranik/kodi_repo/tree/alpha/repo/zips/repository.konikvranik-alpha):
+
+1. Download and install the current `repository.konikvranik-alpha-<version>.zip` from the link above (**Install from zip file**).
+2. After installation, you can access the experimental repository under **Install from repository**.
+
+> ⚠️ The alpha repository may contain unstable or incomplete add-ons intended for testing purposes only.
+
+---
+
 🎬 Thank you for using Kodi and supporting the open-source community!
 
 ---
 
-## Experimendal repo
+# 🇨🇿 Česká verze
 
-## 🧪 Experimental Repository (Alpha)
+Vítejte v oficiálním repozitáři Kodi doplňků *konikvranik*.
 
-For early access to work-in-progress or experimental add-ons, you can manually install the **alpha version** of the repository:
+## 📦 Doplňky
 
-- Download the zip file:
-  [https://raw.githubusercontent.com/konikvranik/kodi_repo/alpha/repo/zips/repository.konikvranik/repository.konikvranik-0.0.1-α.zip](https://raw.githubusercontent.com/konikvranik/kodi_repo/alpha/repo/zips/repository.konikvranik/repository.konikvranik-0.0.1-α.zip)
+| Doplňek | Popis |
+|---|---|
+| [`service.cec.server`](matrix/service.cec.server/) | Posílá HDMI-CEC příkazy po síti do CEC rozhraní, ke kterému je Kodi připojeno. Založeno na knihovně [pyCEC](/pyCEC). Pouze x86_64. |
+| [`service.micesink`](matrix/service.micesink/) | Přijímání obrazovky přes Miracast over Infrastructure — kiosk se hlásí jako network display (`_display._tcp` přes avahi) a příchozí stream přehraje Kodim. |
+| [`service.nfo.sync`](matrix/service.nfo.sync/) | Událostní synchronizace `.nfo`: FULL `.nfo` od Sonarru/Radarru převede na identitní formát, takže Kodi scrapuje čerstvá cs-CZ metadata online, opravuje položky bez hodnocení a exportuje knihovnu zpět do `.nfo`. |
 
-- Install it in Kodi:
-1. Open Kodi.
-2. Go to **Add-ons** > **Install from zip file**.
-3. Navigate to the downloaded `.zip` file and confirm.
-4. After installation, you can access the experimental repository under **Install from repository**.
+Větev **master** obsahuje otestované verze, větev **alpha** je jen pro experimenty.
 
-> ⚠️ The alpha repository may contain unstable or incomplete add-ons intended for testing purposes only.
+## 🧭 Přidání repozitáře do Kodi
+
+1. **Otevřete Kodi.**
+2. Přejděte do **Nastavení** (ikona ozubeného kola).
+3. Zvolte **Správce souborů**.
+4. Klikněte na **Přidat zdroj**.
+5. Klikněte na `<None>` a zadejte adresu:
+
+    ```
+    https://konikvranik.github.io/kodi_repo/
+    ```
+
+6. Potvrďte **OK** a pojmenujte zdroj (např. `konikvranik`).
+7. Potvrďte znovu **OK**.
+
+## 🔧 Instalace doplňků z repozitáře
+
+1. Vraťte se na hlavní obrazovku Kodio.
+2. Přejděte do **Doplňky**.
+3. Klikněte na **ikonu krabice** vlevo nahoře (Instalovat z zip souboru).
+4. Zvolte právě přidaný zdroj (`konikvranik`) a nainstalujte repozitář z [repo/zips/repository.konikvranik/](repo/zips/repository.konikvranik/).
+5. Po instalaci přejděte na **Instalovat z repozitáře**.
+6. Zvolte **konikvranik Repository** a nainstalujte dostupné doplňky.
+
+## ⚠️ Řešení problémů
+
+- Ujistěte se, že jsou povoleny **Neznámé zdroje**:
+    - Nastavení > Systém > Doplňky > **Neznámé zdroje**
+- Zkontrolujte připojení k internetu a správnost adresy repozitáře.
+
+## 🤝 Podílet se na vývoji
+
+Repozitář rád přijme příspěvky! Nápady, hlášení chyb nebo vlastní doplňky můžete přidat přes [issue nebo pull request](https://github.com/konikvranik/kodi_repo).
+
+---
+
+## 🧪 Experimentální repozitář (Alpha)
+
+Pro přístup k rozpracovaným a experimentálním doplňkům můžete nainstalovat **alfa verzi** repozitáře z [větve `alpha`](https://github.com/konikvranik/kodi_repo/tree/alpha/repo/zips/repository.konikvranik-alpha):
+
+1. Stáhněte a nainstalujte aktuální `repository.konikvranik-alpha-<verze>.zip` z odkazu výše (**Instalovat z zip souboru**).
+2. Po instalaci najdete experimentální repozitář pod **Instalovat z repozitáře**.
+
+> ⚠️ Alfa repozitář může obsahovat nestabilní nebo nekompletní doplňky určené pouze k testování.
