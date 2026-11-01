@@ -39,6 +39,7 @@ ADDON = xbmcaddon.Addon()
 # bez toho selhávají open()/os.makedirs na state a report (Errno 13
 # 'special:', pozorováno 1. 11. 2026)
 PROFILE = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
+BACKUPS_DIR = os.path.join(PROFILE, 'nfo-backups')
 STATE_FILE = os.path.join(PROFILE, 'state.json')
 MARKER_FILE = os.path.join(PROFILE, 'repair-all.request')
 REPORT_FILE = os.path.join(PROFILE, 'repair-all.report')
@@ -154,6 +155,24 @@ def vfs_write(path, content):
         fh.close()
 
 
+def backup_nfo(nfo_path):
+    # Záloha původního .nfo na LOKÁLNÍ disk (profil addonu). Přes NFS
+    # xbmcvfs.copy zakládá nové soubory s mode 000 a nulovou délkou
+    # (QNAP NFS4 + libnfs, pozorováno 1. 11. 2026) - takový soubor pak
+    # nejde přepsat a zůstává k ničemu. Lokálně je to čisté ext4.
+    match = re.search(r'/Public/(.*)$', nfo_path, re.I)
+    relative = match.group(1) if match else vfilename(nfo_path)
+    dest = os.path.join(BACKUPS_DIR, relative)
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, 'wb') as out:
+            out.write(vfs_read(nfo_path).encode('utf-8'))
+        return True
+    except Exception as err:
+        log('záloha %s selhala: %s' % (nfo_path, err), xbmc.LOGWARNING)
+        return False
+
+
 def movie_nfo_candidates(file_path):
     directory = vdirname(file_path)
     return [directory + '/movie.nfo',
@@ -245,7 +264,7 @@ def repair_movie_nfo(movie):
     ids = extract_ids(text)
     if not ids:
         return 'no-id'
-    xbmcvfs.copy(nfo_path, nfo_path + '.arr-backup')
+        backup_nfo(nfo_path)
     if not vfs_write(nfo_path, identity_xml('movie', ids)):
         return 'write-failed'
     log('movie "%s": %s -> identita' % (movie.get('title'), nfo_path))
@@ -260,7 +279,7 @@ def repair_episode_nfo(episode):
                      if xbmcvfs.exists(c)), None)
     if not nfo_path:
         return 'no-nfo'
-    xbmcvfs.copy(nfo_path, nfo_path + '.arr-backup')
+        backup_nfo(nfo_path)
     if not xbmcvfs.delete(nfo_path):
         return 'delete-failed'
     return 'deleted'
@@ -276,7 +295,7 @@ def repair_show_nfo(show, episode_files):
         ids = extract_ids(text)
         if not ids:
             return 'no-id'
-        xbmcvfs.copy(nfo_path, nfo_path + '.arr-backup')
+        backup_nfo(nfo_path)
         if not vfs_write(nfo_path, identity_xml('tvshow', ids)):
             return 'write-failed'
         log('tvshow "%s": %s -> identita' % (show.get('title'), nfo_path))
