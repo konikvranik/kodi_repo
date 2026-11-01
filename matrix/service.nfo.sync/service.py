@@ -34,7 +34,11 @@ import xbmcaddon
 import xbmcvfs
 
 ADDON = xbmcaddon.Addon()
-PROFILE = ADDON.getAddonInfo('profile')
+# getAddonInfo('profile') vrací special:// protokol - na reálnou cestu
+# (/home/<user>/.kodi/userdata/...) ho převede až xbmcvfs.translatePath;
+# bez toho selhávají open()/os.makedirs na state a report (Errno 13
+# 'special:', pozorováno 1. 11. 2026)
+PROFILE = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
 STATE_FILE = os.path.join(PROFILE, 'state.json')
 MARKER_FILE = os.path.join(PROFILE, 'repair-all.request')
 REPORT_FILE = os.path.join(PROFILE, 'repair-all.report')
