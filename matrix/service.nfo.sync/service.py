@@ -422,6 +422,23 @@ def set_clean_libraries(enabled):
         return False
 
 
+def wait_library_idle(max_wait_s=900):
+    # Kodi během aktivního skenu knihovny MLČKY odmítá všechny refreshy
+    # (JSON-RPC vrátí OK, nic se nestane - pozorováno 1. 11. 2026, přes
+    # hodinu blokující sken z watchdog/autoupdate). Před refresh fází je
+    # nutné počkat, až sken doběhne.
+    waited = 0
+    while xbmc.getInfoLabel('Library.IsScanningVideo').lower() == 'true':
+        if waited >= max_wait_s or xbmc.abortRequested:
+            log('skenuje se i po %d s - refreshy můžou být ignorovány'
+                % waited, xbmc.LOGWARNING)
+            return
+        xbmc.sleep(5000)
+        waited += 5
+    if waited:
+        log('skenovalo se %d s, pokračuji' % waited)
+
+
 def pause_guards():
     # během cyklu vypnout watchdog i auto-clean (jejich skeny/čistění se
     # srážely s hromadným refreshem - Wayland pád 12:06, videoversion
@@ -652,6 +669,7 @@ def main():
             monitor.busy = True
             try:
                 pause_guards()
+                wait_library_idle()
                 try:
                     opts = json.loads(vfs_read(MARKER_FILE))
                 except Exception:
@@ -669,6 +687,7 @@ def main():
             monitor.busy = True
             try:
                 pause_guards()
+                wait_library_idle()
                 incremental(monitor)
             except Exception as err:
                 log('cyklus selhal: %s' % err, xbmc.LOGERROR)
