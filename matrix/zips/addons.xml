@@ -1,48 +1,47 @@
-<?xml version='1.0' encoding='utf-8'?>
-<addons><addon id="service.cec.server" name="CEC TCP Server" version="0.0.1" provider-name="konikvranik">
-	<requires>
-		<import addon="xbmc.python" version="3.0.0" />
-	</requires>
-	<extension point="xbmc.service" library="kodi_cec.py" start="login" />
-	<extension point="xbmc.addon.metadata">
-		<summary lang="en_GB">CEC TCP Server for Kodi</summary>
-		<description lang="en_GB">Provides a TCP server to send and receive CEC commands to HDMI devices connected to Kodi.</description>
-		<platform>all</platform>
-		<language>en</language>
-		<license>MIT</license>
-		<assets>
-			<icon>resources/icon.png</icon>
-			<fanart>resources/fanart.jpg</fanart>
-		</assets>
-	</extension>
-</addon><addon id="service.micesink" name="MICE Sink (Network Display)" version="1.3.1" provider-name="Petr Vraník">
-    <requires>
-        <import addon="xbmc.python" version="3.0.0" />
-    </requires>
-    <extension point="xbmc.service" library="service.py" />
-    <extension point="xbmc.addon.metadata">
-        <summary>Miracast over Infrastructure network display sink</summary>
-        <description>The kiosk advertises itself as a network display (_display._tcp via avahi). When a source connects (GNOME Network Displays, Windows), it negotiates a WFD session and plays the incoming stream via Kodi.</description>
-        <summary lang="cs">Přijímání obrazovky přes Miracast over Infrastructure</summary>
-        <description lang="cs">Kiosk se hlásí jako network display (_display._tcp přes avahi). Po připojení zdroje (GNOME Network Displays, Windows) vyjedná WFD session a přehraje příchozí stream Kodim.</description>
-        <platform>all</platform>
-        <license>GPL-3.0-or-later</license>
-    </extension>
-<<<<<<< HEAD
-</addon><addon id="service.nfo.sync" name="NFO scraper sync" version="1.0.1" provider-name="Petr Vraník">
-=======
-</addon><addon id="service.nfo.sync" name="NFO scraper sync" version="1.0.2" provider-name="Petr Vraník">
->>>>>>> 5d3cd04 (Lokalizace addon.xml (vychozi anglictina + cestina) u vsech addonu)
-	<requires>
-		<import addon="xbmc.python" version="3.0.0" />
-	</requires>
-	<extension point="xbmc.service" library="service.py" />
-	<extension point="xbmc.addon.metadata">
-		<summary>Keeps .nfo files fresh via online scraping (cs-CZ)</summary>
-	<description>After a library scan finishes it checks the .nfo files of newly added items: FULL .nfo files written by Sonarr/Radarr are converted to the identity form (uniqueid + themoviedb.org URL), so Kodi scrapes fresh metadata online with the cs-CZ settings. Episode .nfo files are removed (the SxxEyy file name acts as the identity). Items without a rating are repaired again (24 h cooldown). Once the queue is done the library is exported back to .nfo. A one-shot full-library pass is triggered by the repair-all.request marker in the add-on profile (JSON {"only": "part of the title"}).</description>
-	<summary lang="cs">Udržuje .nfo aktuální přes online scrape (cs-CZ)</summary>
-		<description lang="cs">Po skončení scanu knihovny zkontroluje .nfo nových položek: FULL .nfo od Sonarru/Radarru přepíše na identitní formát (uniqueid + URL themoviedb.org), takže Kodi scrapuje čerstvá metadata online s cs-CZ nastavením. Epizodová .nfo maže (identita je SxxEyy v názvu). Položky bez hodnocení opravuje znovu (cooldown 24 h). Po zpracování exportuje knihovnu zpět do .nfo. Jednorázový průchod celé knihovny: marker repair-all.request v profilu addonu (JSON {"only": "část názvu"}).</description>
-		<platform>all</platform>
-		<license>GPL-3.0-or-later</license>
-	</extension>
-</addon></addons>
+<addons>
+	<addon id="service.cec.server" name="CEC TCP Server" version="0.0.1" provider-name="konikvranik">
+		<requires>
+			<import addon="xbmc.python" version="3.0.0" />
+		</requires>
+		<extension point="xbmc.service" library="kodi_cec.py" start="login" />
+		<extension point="xbmc.addon.metadata">
+			<summary lang="en_GB">CEC TCP Server for Kodi</summary>
+			<description lang="en_GB">Provides a TCP server to send and receive CEC commands to HDMI devices connected to Kodi.</description>
+			<platform>all</platform>
+			<language>en</language>
+			<license>MIT</license>
+			<assets>
+				<icon>resources/icon.png</icon>
+				<fanart>resources/fanart.jpg</fanart>
+			</assets>
+		</extension>
+	</addon>
+	<addon id="service.micesink" name="MICE Sink (Network Display)" version="1.3.1" provider-name="Petr Vraník">
+		<requires>
+			<import addon="xbmc.python" version="3.0.0" />
+		</requires>
+		<extension point="xbmc.service" library="service.py" />
+		<extension point="xbmc.addon.metadata">
+			<summary>Miracast over Infrastructure network display sink</summary>
+			<description>The kiosk advertises itself as a network display (_display._tcp via avahi). When a source connects (GNOME Network Displays, Windows), it negotiates a WFD session and plays the incoming stream via Kodi.</description>
+			<summary lang="cs">Přijímání obrazovky přes Miracast over Infrastructure</summary>
+			<description lang="cs">Kiosk se hlásí jako network display (_display._tcp přes avahi). Po připojení zdroje (GNOME Network Displays, Windows) vyjedná WFD session a přehraje příchozí stream Kodim.</description>
+			<platform>all</platform>
+			<license>GPL-3.0-or-later</license>
+		</extension>
+	</addon>
+	<addon id="service.nfo.sync" name="NFO scraper sync" version="1.0.2" provider-name="Petr Vraník">
+		<requires>
+			<import addon="xbmc.python" version="3.0.0" />
+		</requires>
+		<extension point="xbmc.service" library="service.py" />
+		<extension point="xbmc.addon.metadata">
+			<summary>Keeps .nfo files fresh via online scraping (cs-CZ)</summary>
+			<description>After a library scan finishes it checks the .nfo files of newly added items: FULL .nfo files written by Sonarr/Radarr are converted to the identity form (uniqueid + themoviedb.org URL), so Kodi scrapes fresh metadata online with the cs-CZ settings. Episode .nfo files are removed (the SxxEyy file name acts as the identity). Items without a rating are repaired again (24 h cooldown). Once the queue is done the library is exported back to .nfo. A one-shot full-library pass is triggered by the repair-all.request marker in the add-on profile (JSON {"only": "part of the title"}).</description>
+			<summary lang="cs">Udržuje .nfo aktuální přes online scrape (cs-CZ)</summary>
+			<description lang="cs">Po skončení scanu knihovny zkontroluje .nfo nových položek: FULL .nfo od Sonarru/Radarru přepíše na identitní formát (uniqueid + URL themoviedb.org), takže Kodi scrapuje čerstvá metadata online s cs-CZ nastavením. Epizodová .nfo maže (identita je SxxEyy v názvu). Položky bez hodnocení opravuje znovu (cooldown 24 h). Po zpracování exportuje knihovnu zpět do .nfo. Jednorázový průchod celé knihovny: marker repair-all.request v profilu addonu (JSON {"only": "část názvu"}).</description>
+			<platform>all</platform>
+			<license>GPL-3.0-or-later</license>
+		</extension>
+	</addon>
+</addons>
