@@ -366,11 +366,12 @@ def mark_retry(state, key):
 
 
 def export_library():
-    # separate-files export vedle médií s overwrite, bez obrázků
-    # (video, separate=true, thumbs=false, overwrite=true, actorthumbs=false)
-    log('export knihovny do .nfo')
-    xbmc.executebuiltin('ExportLibrary(video,true,false,true,false)')
-    xbmc.sleep(5000)  # export běží asynchronně, dej mu prostor rozběhnout se
+    # VYPNUTO: ExportLibrary přes libnfs zakládá nové soubory s mode 000
+    # (QNAP NFS4 + libnfs create bug, pozorováno 1. 11. 2026) - takové
+    # soubory jsou nečitelné a blokují scanner. Write-back nahradí 1.1.0
+    # (sestavení .nfo z DB přes JSON-RPC a přepis stávajících souborů přes
+    # xbmcvfs - overwrite funguje, create ne).
+    pass
 
 
 def write_report():
@@ -518,6 +519,13 @@ def repair_all(monitor, opts):
                 if act == 'deleted' and monitor.refresh(
                         'episode', episode['episodeid']):
                     changed = True
+                if act == 'no-nfo' and monitor.refresh(
+                        'episode', episode['episodeid']):
+                    # bez .nfo se epizoda scrapovala při importu; staré
+                    # importy z nfo éry ale mají v DB anglická data ->
+                    # refresh jednou znovu (idempotentní)
+                    changed = True
+                    act = 'no-nfo | refresh'
                 report('episode | %s S%02dE%02d | %s'
                        % (episode.get('showtitle'),
                           episode.get('season') or 0,
