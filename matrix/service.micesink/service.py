@@ -45,10 +45,17 @@ RELAY_PORT = 16386
 # Kodi neumí tcp:// pro playback (unsupported protocol, měřeno 1. 11.
 # 2026) - podáváme proto rtp:// na loopbacku (prokázaná cesta, PT=33)
 STREAM_URL = "rtp://127.0.0.1:%d" % RELAY_PORT
-# s: kolik streamu predlozit Kodimu pri otevreni (probe demuxeru
-# spotrebuje backlog okamzite; playback pak zacina u zive hrany).
-# Mereno: probe ~1.15 s obsahu - budget mirne nad.
-PROBE_BUDGET_S = 1.5
+# s: kolik streamu predlozit Kodimu pri otevreni. ffmpeg find_stream_info
+# data z probe KESE a playback startuje od nejstarsiho probraneho paketu
+# - proto musi byt backlog maly (velky backlog = konstantni lag od jeho
+# zacatku, mereno 1. 11. 2026: 1.5 s backlog = ~2 s lag). Kodemicke info
+# (SPS/PPS+IDR) zajisti IDR spam nize, takze staci ~0.3 s.
+PROBE_BUDGET_S = 0.3
+# s/ks: IDR spam na zacatku - vynuti klicove snimky co ~0.2 s, aby
+# find_stream_info dokoncil po <=0.3 s obsahu (jinak ceka na periodicke
+# IDR zdroje = GOP 1 s)
+IDR_SPAM_INTERVAL_S = 0.2
+IDR_SPAM_DURATION_S = 3.0
 # s: max stari dat v ring bufferu relaye
 RING_CAP_S = 6.0
 # s: grace pred kontrolou isPlaying() - video vlakno startuje pozdeji
@@ -382,9 +389,9 @@ class RtspSession(threading.Thread):
             self._request("PLAY", base + "/wfd1.0/streamid=0",
                           "Session: %s\r\n" % self.session_id)
 
-            # Relay prebira RTP (Kodi uz UDP port neotevira). Backlog musi
-            # obsahovat klicovy snimek - IDR request hned po PLAY (reakce
-            # zdroje ~0.5 s, pozdeji by se ztratil v cekani).
+            # Relay prebira RTP (Kodi uz UDP port neotevira). Nejdrive
+            # IDR request - reakce zdroje trva ~0.5 s (pipeline latency),
+            # od te chvile stream nese cerstve klicove snimky.
             self.relay = TsRelay(RTP_PORT)
             self.relay.start()
             try:
@@ -394,19 +401,35 @@ class RtspSession(threading.Thread):
                               "Content-Length: %d\r\n" % len(idr), body=idr)
             except Exception as exc:  # noqa: BLE001 - IDR je optimalizace
                 log("idr request selhal (%s), pokracuji" % exc)
-            # Naplnit backlog (probe z nej bude cist) - max 3 s, pak
-            # startovat s tim co je (GOP zdroje 1 s => IDR dorazi)
-            backlog_wait = time.time() + 3
+
+            # Pockat na zaklad backlogu, pak pustit prehravani
+            backlog_wait = time.time() + 2
             while (self.relay.buffered_seconds() < PROBE_BUDGET_S
                    and time.time() < backlog_wait
                    and not self.relay.stop_flag.is_set()):
-                time.sleep(0.1)
+                time.sleep(0.05)
             log("stream od %s - backlog %.1f s, prehravam %s"
                 % (self.src, self.relay.buffered_seconds(), STREAM_URL))
 
             xbmc.executebuiltin("PlayerControl(Stop)")
             xbmc.executebuiltin('PlayMedia("%s")' % STREAM_URL)
             self.play_started = time.time()
+
+            # IDR spam po dobu probe+startu: find_stream_info kezuje
+            # probrane pakety a playback startuje od nejstarsiho - s
+            # klicovymi snimky co ~0.2 s staci probe <=0.3 s obsahu.
+            # (RTSP socket pak prevezme _stream_loop; keep-alive zdroje
+            # ~25 s, blokovani par sekund nevadi.)
+            spam_end = time.time() + IDR_SPAM_DURATION_S
+            while time.time() < spam_end and not self.stop_flag.is_set():
+                try:
+                    self._request("SET_PARAMETER", base + "/wfd1.0",
+                                  "Content-Type: text/parameters\r\n"
+                                  "Content-Length: %d\r\n" % len(idr),
+                                  body=idr)
+                except Exception:  # noqa: BLE001 - spam je optimalizace
+                    break
+                time.sleep(IDR_SPAM_INTERVAL_S)
 
             self._stream_loop()
         except Exception as exc:  # noqa: BLE001 - service addon loguje vse
