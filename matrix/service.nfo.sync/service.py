@@ -40,6 +40,9 @@ ADDON = xbmcaddon.Addon()
 # 'special:', pozorováno 1. 11. 2026)
 PROFILE = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
 BACKUPS_DIR = os.path.join(PROFILE, 'nfo-backups')
+GUARD_ADDON = 'service.librarywatchdog'
+CLEAN_SETTINGS = os.path.join(os.path.dirname(PROFILE.rstrip('/')),
+                              'service.libraryautoupdate', 'settings.xml')
 STATE_FILE = os.path.join(PROFILE, 'state.json')
 MARKER_FILE = os.path.join(PROFILE, 'repair-all.request')
 REPORT_FILE = os.path.join(PROFILE, 'repair-all.report')
@@ -356,6 +359,89 @@ class NFOSync(xbmc.Monitor):
                 xbmc.sleep(2000)
 
 
+def set_addon_enabled(addon_id, enabled):
+    req = {"jsonrpc": "2.0", "id": 1, "method": "Addons.SetAddonEnabled",
+           "params": {"addonid": addon_id, "enabled": enabled}}
+    try:
+        json.loads(xbmc.executeJSONRPC(json.dumps(req)))
+        return True
+    except Exception as err:
+        log('enable %s selhal: %s' % (addon_id, err), xbmc.LOGWARNING)
+        return False
+
+
+def get_addon_enabled(addon_id):
+    req = {"jsonrpc": "2.0", "id": 1, "method": "Addons.GetAddonDetails",
+           "params": {"addonid": addon_id, "properties": ["enabled"]}}
+    try:
+        d = json.loads(xbmc.executeJSONRPC(json.dumps(req)))
+        return d.get('result', {}).get('addon', {}).get('enabled')
+    except Exception:
+        return None
+
+
+def get_clean_libraries():
+    # clean_libraries v service.libraryautoupdate = čistit knihovnu při
+    # každé aktualizaci; uživatel ho chce ZAPNUTÝ, addon ho během cyklu
+    # dočasně vypíná a po sobě vrací
+    try:
+        with open(CLEAN_SETTINGS, encoding='utf-8') as fh:
+            m = re.search(r'<setting id="clean_libraries">([^<]*)</setting>',
+                          fh.read())
+        return m.group(1) == 'true' if m else None
+    except Exception:
+        return None
+
+
+def set_clean_libraries(enabled):
+    try:
+        with open(CLEAN_SETTINGS, encoding='utf-8') as fh:
+            text = fh.read()
+        new = re.sub(r'(<setting id="clean_libraries">)[^<]*(</setting>)',
+                     lambda m: m.group(1) + ('true' if enabled else 'false')
+                     + m.group(2), text, count=1)
+        if new != text:
+            with open(CLEAN_SETTINGS, 'w', encoding='utf-8') as fh:
+                fh.write(new)
+        return True
+    except Exception as err:
+        log('nastavení clean_libraries selhalo: %s' % err, xbmc.LOGWARNING)
+        return False
+
+
+def pause_guards():
+    # během cyklu vypnout watchdog i auto-clean (jejich skeny/čistění se
+    # srážely s hromadným refreshem - Wayland pád 12:06, videoversion
+    # orfány, dialog "nejde čistit"); původní stav se uloží do state
+    state = load_state()
+    if state.get('guards_paused'):
+        return
+    saved = {'watchdog': get_addon_enabled(GUARD_ADDON),
+             'clean': get_clean_libraries()}
+    set_addon_enabled(GUARD_ADDON, False)
+    set_clean_libraries(False)
+    state['guards_paused'] = saved
+    save_state(state)
+    log('pauza hlídacích mechanismů (watchdog=%s, clean=%s)'
+        % (saved.get('watchdog'), saved.get('clean')))
+
+
+def resume_guards():
+    # vrátit původní stav (i po pádu/restartu Kodi - voláno při startu)
+    state = load_state()
+    saved = state.get('guards_paused')
+    if saved is None:
+        return
+    if saved.get('watchdog') is not False:
+        set_addon_enabled(GUARD_ADDON, True)
+    if saved.get('clean') is not False:
+        set_clean_libraries(True)
+    del state['guards_paused']
+    save_state(state)
+    log('hlídací mechanismy obnoveny (watchdog=%s, clean=%s)'
+        % (saved.get('watchdog'), saved.get('clean')))
+
+
 def should_retry(state, key):
     return state.get('rating_retry', {}).get(key, 0) < time.time() \
         - RATING_RETRY_S
@@ -546,11 +632,13 @@ def repair_all(monitor, opts):
 
 def main():
     monitor = NFOSync()
+    resume_guards()  # kdyby Kodi padl uprostřed cyklu (guards_paused ve state)
     log('start (profil: %s)' % PROFILE)
     while not monitor.abortRequested():
         if not monitor.busy and xbmcvfs.exists(MARKER_FILE):
             monitor.busy = True
             try:
+                pause_guards()
                 try:
                     opts = json.loads(vfs_read(MARKER_FILE))
                 except Exception:
@@ -559,6 +647,7 @@ def main():
             except Exception as err:
                 log('repair-all selhal: %s' % err, xbmc.LOGERROR)
             finally:
+                resume_guards()
                 xbmcvfs.delete(MARKER_FILE)
                 monitor.busy = False
         elif (not monitor.busy and monitor.scan_at
@@ -566,10 +655,12 @@ def main():
             monitor.scan_at = None
             monitor.busy = True
             try:
+                pause_guards()
                 incremental(monitor)
             except Exception as err:
                 log('cyklus selhal: %s' % err, xbmc.LOGERROR)
             finally:
+                resume_guards()
                 monitor.busy = False
         if monitor.waitForAbort(POLL_S):
             break
