@@ -47,5 +47,9 @@ jobs:
       - name: Commit packages
         run: |
           git add .
+          if git diff --staged --quiet; then
+            echo "Nothing to commit - skipping"
+            exit 0
+          fi
           git commit -m ":package::bookmark: - Update ${{github.event.client_payload.module}} to ${{github.event.client_payload.tag}}"
           git push
