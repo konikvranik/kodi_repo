@@ -7,8 +7,15 @@
 # SOURCE_READY; doplnek pak otevre RTSP spojeni ZPET na zdroj (sink je
 # RTSP klient, zdroj RTSP server), vyjedna WFD parametry (M1-M7) a po
 # PLAY prehraje prichazejici RTP/MPEG-TS (H264+AAC) Kodim -
-# PlayMedia(rtp://) - dekoder (HW na RPi5), renderer i ALSA sink resi
-# Kodi player. Zadny GStreamer, zadne okno navic.
+# PlayMedia(tcp://relay) - dekoder (HW na RPi5), renderer i ALSA sink
+# resi Kodi player. Zadny GStreamer, zadne okno navic.
+#
+# Relay TsRelay: RTP prijima doplnek sam (Kodi UDP neotevira) a TS podava
+# Kodim pres TCP na loopbacku - od okamziku (now - PROBE_BUDGET). Probe
+# demuxeru (hledani IDR/audio configu) by u 1x live zdroje trval realny
+# cas (~1.2 s, mereno 1. 11. 2026) a prehravani by startovalo trvale za
+# zivou hranou; z predbufferu probe probehne okamzite a playback zacne
+# temer u zive hrany.
 #
 # Kolize s Steam Linkem/Moonlighttem resi shared flock
 # /run/lock/kiosk-stream.lock (stejny soubor pouzivaji oba wrappery):
@@ -20,6 +27,7 @@
 # parametru); lazycast d2.py (funkcni MICE sink, dukaz wfd_video_formats
 # retezce). Licence tohoto souboru: GPLv3+.
 
+import collections
 import fcntl
 import os
 import socket
@@ -33,10 +41,17 @@ RTP_PORT = 16384
 RTCP_PORT = 16385
 RTSP_DEFAULT_PORT = 7236
 LOCK_FILE = "/run/lock/kiosk-stream.lock"
-STREAM_URL = "rtp://0.0.0.0:%d" % RTP_PORT
-# s: grace pred kontrolou isPlaying() - Kodi bindne RTP port az po
-# otevreni demuxeru a video vlakno startuje pozdeji; driv by kontrola
-# "nic nehraje" zabila prave startujici prehravani
+RELAY_PORT = 16386
+STREAM_URL = "tcp://127.0.0.1:%d" % RELAY_PORT
+# s: kolik streamu predlozit Kodimu pri otevreni (probe demuxeru
+# spotrebuje backlog okamzite; playback pak zacina u zive hrany).
+# Mereno: probe ~1.15 s obsahu - budget mirne nad.
+PROBE_BUDGET_S = 1.5
+# s: max stari dat v ring bufferu relaye
+RING_CAP_S = 6.0
+# s: grace pred kontrolou isPlaying() - video vlakno startuje pozdeji
+# po otevreni; driv by kontrola "nic nehraje" zabila startujici
+# prehravani
 PLAY_BIND_GRACE = 5
 # s: limit na cely RTSP handshake
 ESTABLISH_TIMEOUT = 20
@@ -65,22 +80,126 @@ def log(msg):
     xbmc.log("[service.micesink] %s" % msg, level=xbmc.LOGINFO)
 
 
-def _udp_bound():
-    """Kodi uz posloucha na RTP portu? (/proc/net/udp, 16384 = 0x4000).
+class TsRelay(threading.Thread):
+    """RTP/TS prijem + TCP server pro Kodi (nizkolatencni cesta).
 
-    Bind je signal, ze demuxer beziciho prehravace otevrelo socket - od
-    te chvile ma smysl poslat IDR request (drivejsi pakety by padly).
+    Kodi otevre TCP az pres PlayMedia; do te doby relay sbira TS do
+    ring bufferu. Po pripojeni podava od okamziku (now - PROBE_BUDGET):
+    probe demuxeru (cca 1.2 s obsahu - IDR + audio config) probehne
+    okamzite z backlogu a prehravani zacne u (budget - probe) za zivou
+    hranou misto (cela probe) za ni.
     """
-    try:
-        with open("/proc/net/udp") as f:
-            next(f)
-            for line in f:
-                parts = line.split()
-                if len(parts) > 1 and parts[1].endswith(":4000"):
-                    return True
-    except (OSError, StopIteration, ValueError):
-        pass
-    return False
+
+    def __init__(self, rtp_port):
+        super(TsRelay, self).__init__(daemon=True)
+        self.stop_flag = threading.Event()
+        self.lock = threading.Lock()
+        self.ring = collections.deque()  # (monotonic t, ts bytes)
+        self.span = 0.0
+        self.rtp_port = rtp_port
+        self.sock = None
+        self.client = None
+
+    @staticmethod
+    def _payload_ts(data):
+        """Vyblinka MPEG-TS z UDP datagramu (RPT i cisty TS)."""
+        if data[:1] == b"\x47":
+            return data  # cisty MPEG-TS bez RTP hlavicky
+        if len(data) >= 12 and (data[0] >> 6) == 2:
+            off = 12 + 4 * (data[0] & 0x0F)  # verze 2 + CSRC count
+            if data[0] & 0x10 and len(data) >= off + 4:  # extension
+                off += 4 + 4 * int.from_bytes(data[off + 2:off + 4],
+                                              "big")
+            return data[off:] if off < len(data) else None
+        return None
+
+    def buffered_seconds(self):
+        with self.lock:
+            return self.span
+
+    def _send(self, data):
+        try:
+            self.client.sendall(data)
+            return True
+        except OSError as exc:
+            log("relay: Kodi odpadl (%s)" % exc)
+            self.stop_flag.set()
+            return False
+
+    def run(self):
+        srv = None
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,
+                                 4 << 20)
+            self.sock.bind(("0.0.0.0", self.rtp_port))
+            self.sock.settimeout(0.2)
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", RELAY_PORT))
+            srv.listen(1)
+            srv.settimeout(0.2)
+        except OSError as exc:
+            log("relay: nelze otevrit sockety: %s" % exc)
+            return
+        log("relay: UDP %d -> TCP %d" % (self.rtp_port, RELAY_PORT))
+
+        while not self.stop_flag.is_set():
+            if self.client is None:
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    conn = None
+                if conn is not None:
+                    conn.setsockopt(socket.IPPROTO_TCP,
+                                    socket.TCP_NODELAY, 1)
+                    conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF,
+                                    2 << 20)
+                    conn.settimeout(3.0)
+                    self.client = conn
+                    log("relay: Kodi pripojen, podavam od %.1f s"
+                        % PROBE_BUDGET_S)
+                    cutoff = time.monotonic() - PROBE_BUDGET_S
+                    with self.lock:
+                        backlog = [ts for t, ts in self.ring
+                                   if t >= cutoff]
+                    for chunk in backlog:
+                        if not self._send(chunk):
+                            break
+                    continue
+            try:
+                data, _ = self.sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            ts = self._payload_ts(data)
+            if ts is None:
+                continue
+            now = time.monotonic()
+            with self.lock:
+                self.ring.append((now, ts))
+                while self.ring and now - self.ring[0][0] > RING_CAP_S:
+                    self.ring.popleft()
+                self.span = now - self.ring[0][0] if self.ring else 0.0
+            if self.client is not None:
+                self._send(ts)
+
+        for sock in (self.sock, srv, self.client):
+            try:
+                if sock:
+                    sock.close()
+            except OSError:
+                pass
+        log("relay: konec")
+
+    def stop(self):
+        self.stop_flag.set()
+        # odblokovat pripadne cekani v recv/accept zavrenim socketu
+        for sock in (self.sock, self.client):
+            try:
+                if sock:
+                    sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
 
 class RtspSession(threading.Thread):
@@ -103,6 +222,7 @@ class RtspSession(threading.Thread):
         self.stop_flag = threading.Event()
         self.play_started = None
         self.deadline = 0
+        self.relay = None
 
     # -- nastroje ------------------------------------------------------
     def _send(self, data):
@@ -242,31 +362,31 @@ class RtspSession(threading.Thread):
             self._request("PLAY", base + "/wfd1.0/streamid=0",
                           "Session: %s\r\n" % self.session_id)
 
-            log("stream od %s - prehravam %s" % (self.src, STREAM_URL))
+            # Relay prebira RTP (Kodi uz UDP port neotevira). Backlog musi
+            # obsahovat klicovy snimek - IDR request hned po PLAY (reakce
+            # zdroje ~0.5 s, pozdeji by se ztratil v cekani).
+            self.relay = TsRelay(RTP_PORT)
+            self.relay.start()
+            try:
+                idr = "wfd_idr_request: none\r\n"
+                self._request("SET_PARAMETER", base + "/wfd1.0",
+                              "Content-Type: text/parameters\r\n"
+                              "Content-Length: %d\r\n" % len(idr), body=idr)
+            except Exception as exc:  # noqa: BLE001 - IDR je optimalizace
+                log("idr request selhal (%s), pokracuji" % exc)
+            # Naplnit backlog (probe z nej bude cist) - max 3 s, pak
+            # startovat s tim co je (GOP zdroje 1 s => IDR dorazi)
+            backlog_wait = time.time() + 3
+            while (self.relay.buffered_seconds() < PROBE_BUDGET_S
+                   and time.time() < backlog_wait
+                   and not self.relay.stop_flag.is_set()):
+                time.sleep(0.1)
+            log("stream od %s - backlog %.1f s, prehravam %s"
+                % (self.src, self.relay.buffered_seconds(), STREAM_URL))
+
             xbmc.executebuiltin("PlayerControl(Stop)")
             xbmc.executebuiltin('PlayMedia("%s")' % STREAM_URL)
             self.play_started = time.time()
-
-            # IDR: Kodi bindne UDP port az po startu demuxeru; IDR poslany
-            # driv by padl do neprislouchajiciho socketu. Pockame na bind
-            # a vyzadame si klicovy snimek hned - bez toho demuxer ceka na
-            # periodicke IDR (GOP zdroje = 1 s) a prehravani startuje
-            # ~1.5 s za zivou hranou (mereno 1. 11. 2026, log: OpenFile ->
-            # codec open 1,47 s). Pojistna opakovani kryji zabeh rendereru.
-            deadline = time.time() + 2
-            while time.time() < deadline and not _udp_bound():
-                time.sleep(0.05)
-            for attempt in range(3):
-                try:
-                    idr = "wfd_idr_request: none\r\n"
-                    self._request("SET_PARAMETER", base + "/wfd1.0",
-                                  "Content-Type: text/parameters\r\n"
-                                  "Content-Length: %d\r\n" % len(idr),
-                                  body=idr)
-                except Exception as exc:  # noqa: BLE001 - IDR je optimalizace
-                    log("idr request selhal (%s), pokracuji" % exc)
-                    break
-                time.sleep(0.6)
 
             self._stream_loop()
         except Exception as exc:  # noqa: BLE001 - service addon loguje vse
@@ -302,6 +422,8 @@ class RtspSession(threading.Thread):
                 break
 
     def _close(self):
+        if self.relay is not None:
+            self.relay.stop()
         try:
             if self.sock and self.session_id:
                 self.cseq += 1

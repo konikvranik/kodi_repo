@@ -17,7 +17,7 @@
 			<fanart>resources/fanart.jpg</fanart>
 		</assets>
 	</extension>
-</addon><addon id="service.micesink" name="MICE Sink (Network Display)" version="1.0.3" provider-name="Petr Vraník">
+</addon><addon id="service.micesink" name="MICE Sink (Network Display)" version="1.1.0" provider-name="Petr Vraník">
     <requires>
         <import addon="xbmc.python" version="3.0.0" />
     </requires>
