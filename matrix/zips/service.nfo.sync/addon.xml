@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="service.nfo.sync" name="NFO scraper sync" version="1.0.0" provider-name="Petr Vraník">
+	<requires>
+		<import addon="xbmc.python" version="3.0.0"/>
+	</requires>
+	<extension point="xbmc.service" library="service.py"/>
+	<extension point="xbmc.addon.metadata">
+		<summary lang="cs">Udržuje .nfo aktuální přes online scrape (cs-CZ)</summary>
+		<description lang="cs">Po skončení scanu knihovny zkontroluje .nfo nových položek: FULL .nfo od Sonarru/Radarru přepíše na identitní formát (uniqueid + URL themoviedb.org), takže Kodi scrapuje čerstvá metadata online s cs-CZ nastavením. Epizodová .nfo maže (identita je SxxEyy v názvu). Položky bez hodnocení opravuje znovu (cooldown 24 h). Po zpracování exportuje knihovnu zpět do .nfo. Jednorázový průchod celé knihovny: marker repair-all.request v profilu addonu (JSON {"only": "část názvu"}).</description>
+		<platform>all</platform>
+		<license>GPL-3.0-or-later</license>
+	</extension>
+</addon>
