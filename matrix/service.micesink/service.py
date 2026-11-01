@@ -34,8 +34,9 @@ RTCP_PORT = 16385
 RTSP_DEFAULT_PORT = 7236
 LOCK_FILE = "/run/lock/kiosk-stream.lock"
 STREAM_URL = "rtp://0.0.0.0:%d" % RTP_PORT
-# s: Kodi bindne RTP port az po otevreni demuxeru - ranne pakety se
-# ztrati, IDR cteme az po teto grace dobe
+# s: grace pred kontrolou isPlaying() - Kodi bindne RTP port az po
+# otevreni demuxeru a video vlakno startuje pozdeji; driv by kontrola
+# "nic nehraje" zabila prave startujici prehravani
 PLAY_BIND_GRACE = 5
 # s: limit na cely RTSP handshake
 ESTABLISH_TIMEOUT = 20
@@ -62,6 +63,24 @@ TLV_RTSP_PORT = 0x02
 
 def log(msg):
     xbmc.log("[service.micesink] %s" % msg, level=xbmc.LOGINFO)
+
+
+def _udp_bound():
+    """Kodi uz posloucha na RTP portu? (/proc/net/udp, 16384 = 0x4000).
+
+    Bind je signal, ze demuxer beziciho prehravace otevrelo socket - od
+    te chvile ma smysl poslat IDR request (drivejsi pakety by padly).
+    """
+    try:
+        with open("/proc/net/udp") as f:
+            next(f)
+            for line in f:
+                parts = line.split()
+                if len(parts) > 1 and parts[1].endswith(":4000"):
+                    return True
+    except (OSError, StopIteration, ValueError):
+        pass
+    return False
 
 
 class RtspSession(threading.Thread):
@@ -228,13 +247,26 @@ class RtspSession(threading.Thread):
             xbmc.executebuiltin('PlayMedia("%s")' % STREAM_URL)
             self.play_started = time.time()
 
-            # IDR: Kodi bindne UDP port az ~1-2 s po PlayMedia, ranne
-            # pakety padnou - vynutime klicovy snimek, az je demuxer nahore
-            time.sleep(2)
-            idr = "wfd_idr_request: none\r\n"
-            self._request("SET_PARAMETER", base + "/wfd1.0",
-                          "Content-Type: text/parameters\r\n"
-                          "Content-Length: %d\r\n" % len(idr), body=idr)
+            # IDR: Kodi bindne UDP port az po startu demuxeru; IDR poslany
+            # driv by padl do neprislouchajiciho socketu. Pockame na bind
+            # a vyzadame si klicovy snimek hned - bez toho demuxer ceka na
+            # periodicke IDR (GOP zdroje = 1 s) a prehravani startuje
+            # ~1.5 s za zivou hranou (mereno 1. 11. 2026, log: OpenFile ->
+            # codec open 1,47 s). Pojistna opakovani kryji zabeh rendereru.
+            deadline = time.time() + 2
+            while time.time() < deadline and not _udp_bound():
+                time.sleep(0.05)
+            for attempt in range(3):
+                try:
+                    idr = "wfd_idr_request: none\r\n"
+                    self._request("SET_PARAMETER", base + "/wfd1.0",
+                                  "Content-Type: text/parameters\r\n"
+                                  "Content-Length: %d\r\n" % len(idr),
+                                  body=idr)
+                except Exception as exc:  # noqa: BLE001 - IDR je optimalizace
+                    log("idr request selhal (%s), pokracuji" % exc)
+                    break
+                time.sleep(0.6)
 
             self._stream_loop()
         except Exception as exc:  # noqa: BLE001 - service addon loguje vse
