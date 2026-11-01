@@ -31,7 +31,7 @@
 			<license>GPL-3.0-or-later</license>
 		</extension>
 	</addon>
-	<addon id="service.nfo.sync" name="NFO scraper sync" version="1.0.3" provider-name="Petr Vraník">
+	<addon id="service.nfo.sync" name="NFO scraper sync" version="1.0.4" provider-name="Petr Vraník">
 	<requires>
 		<import addon="xbmc.python" version="3.0.0" />
 	</requires>
