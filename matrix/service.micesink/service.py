@@ -6,14 +6,16 @@
 # Zdroj (GNOME Network Displays / Windows) se pripoji na TCP 7250 a posle
 # SOURCE_READY; doplnek pak otevre RTSP spojeni ZPET na zdroj (sink je
 # RTSP klient, zdroj RTSP server), vyjedna WFD parametry (M1-M7) a po
-# PLAY prehraje prichazejici RTP/MPEG-TS (H264+AAC) Kodim -
-# PlayMedia(rtp://) - dekoder (HW na RPi5), renderer i ALSA sink resi
-# Kodi player. Zadny GStreamer, zadne okno navic.
+# PLAY prehraje prichazejici RTP/MPEG-TS (H264+AAC) externim prehravacem
+# mpv (subprocess, fullscreen okno v teze labwc session - stejny model
+# jako Steam Link; Kodi bezi dal pod nim). Kodi player se pro cast
+# nepouziva: nema per-stream low-latency volby (viz nize).
 #
-# Latence: vyslednych ~1.5-2 s je dano fixni pipeline latency g-n-d
-# (500 ms), enkoderem a internim bufferovanim Kodi playeru; relay se
-# smazanym zpozdenim neprokazal (verze 1.1.x) a byl odstranen. Pro
-# z rychlejsi probe po startu se zdroji vyzadujeme IDR (klicove snimky)
+# Latence: Kodi player daval ~1.5-2 s (fixni 500 ms pipeline latency
+# g-n-d + probe-cache find_stream_info + audio-clock sync); mpv s
+# explicitnimi flagy (cache=no, minimalni probe, audio-buffer 60 ms)
+# rezerva pod ~1 s. Zbyvajici ~0.6 s je fixne ve zdroji (g-n-d).
+# Pro rychly start probe se zdrojem vyzadujeme IDR (klicove snimky)
 # v hustem intervalu - probe demuxeru pak dokonci po ~0.3-0.5 s obsahu
 # misto ~1.5 s (cekani na periodicke IDR, GOP zdroje = 1 s).
 #
@@ -30,6 +32,7 @@
 import fcntl
 import os
 import socket
+import subprocess
 import threading
 import time
 
@@ -40,15 +43,34 @@ RTP_PORT = 16384
 RTCP_PORT = 16385
 RTSP_DEFAULT_PORT = 7236
 LOCK_FILE = "/run/lock/kiosk-stream.lock"
-STREAM_URL = "rtp://0.0.0.0:%d" % RTP_PORT
+PLAYER_URL = "rtp://0.0.0.0:%d" % RTP_PORT
+
+# Prehravac: mpv jako subprocess (external player, fullscreen okno v
+# teze labwc session jako Steam Link - Kodi bezi dal pod nim). Kodi
+# player nemame jak nastavit nizkolatencne (probe-cache find_stream_info
+# + audio-clock sync, mereno ~1.5-2 s lag); mpv umi vse explicitne:
+# zadny cache, minimalni probe, maly audio buffer. Zdedi WAYLAND_DISPLAY
+# z prostredi Kodi (wayland klient).
+MPV_ARGS = [
+    "mpv", "--fs", "--no-border", "--force-window=immediate",
+    "--cache=no",
+    "--demuxer-lavf-o=fflags=+nobuffer+igndts",
+    "--demuxer-lavf-analyzeduration=0.1",
+    "--demuxer-lavf-probesize=32768",
+    "--demuxer-readahead-secs=0.2",
+    "--demuxer-max-bytes=1MiB",
+    "--audio-buffer=0.06",
+    "--ao=alsa", "--audio-device=alsa/default:CARD=vc4hdmi0",
+    "--hwdec=auto-safe",
+    "--really-quiet",
+    "--log-file=/tmp/micesink-mpv.log",
+]
 # s/ks: IDR spam na zacatku - vynuti klicove snimky co ~0.2 s, aby
 # probe demuxeru dokoncil po <=0.3 s obsahu (jinak ceka na periodicke
 # IDR zdroje = GOP 1 s => start playbacku ~1.5 s za zivou hranou)
 IDR_SPAM_INTERVAL_S = 0.2
 IDR_SPAM_DURATION_S = 3.0
-# s: grace pred kontrolou isPlaying() - video vlakno startuje pozdeji
-# po otevreni; driv by kontrola "nic nehraje" zabila startujici
-# prehravani
+# s: grace pred kontrolou procesu mpv (start trva ~1 s)
 PLAY_BIND_GRACE = 5
 # s: limit na cely RTSP handshake
 ESTABLISH_TIMEOUT = 20
@@ -116,6 +138,7 @@ class RtspSession(threading.Thread):
         self.stop_flag = threading.Event()
         self.play_started = None
         self.deadline = 0
+        self.player = None  # mpv subprocess
 
     # -- nastroje ------------------------------------------------------
     def _send(self, data):
@@ -255,13 +278,17 @@ class RtspSession(threading.Thread):
             self._request("PLAY", base + "/wfd1.0/streamid=0",
                           "Session: %s\r\n" % self.session_id)
 
-            # Prehravani: Kodi si otevre rtp:// samo (HW dekoder, ALSA).
-            log("stream od %s - prehravam %s" % (self.src, STREAM_URL))
-            xbmc.executebuiltin("PlayerControl(Stop)")
-            xbmc.executebuiltin('PlayMedia("%s")' % STREAM_URL)
+            # Prehravani: mpv (external player, nizkolatencni) - Kodi
+            # bezi dal, mpv ho fullscreen prekryje jako Steam Link.
+            log("stream od %s - mpv %s" % (self.src, PLAYER_URL))
+            try:
+                self.player = subprocess.Popen(MPV_ARGS + [PLAYER_URL])
+            except OSError as exc:
+                log("mpv nelze spustit (%s) - session konci" % exc)
+                raise
             self.play_started = time.time()
 
-            # IDR spam po dobu probe+startu: az Kodi bindne UDP port,
+            # IDR spam po dobu probe+startu: az mpv bindne UDP port,
             # vyzadujeme klicove snimky co ~0.2 s - probe demuxeru pak
             # dokonci po <=0.3 s obsahu misto cekani na periodicke IDR
             # (GOP zdroje = 1 s). RTSP socket pak prevezme _stream_loop
@@ -289,8 +316,7 @@ class RtspSession(threading.Thread):
 
     def _stream_loop(self):
         """Odpovidat na keep-alive (GET_PARAMETER ~25 s), hlidat konec
-        prehravani (zdroj zmizel / uzivatel stopl / Kodi selhalo)."""
-        player = xbmc.Player()
+        prehravani (zdroj zmizel / uzivatel stopl / mpv skoncil)."""
         while not self.stop_flag.is_set():
             try:
                 self.sock.settimeout(1.0)
@@ -310,8 +336,10 @@ class RtspSession(threading.Thread):
                 pass
             if self.play_started \
                     and time.time() - self.play_started > PLAY_BIND_GRACE \
-                    and not player.isPlaying():
-                log("Kodi uz neprehrava - ukoncuji session")
+                    and self.player is not None \
+                    and self.player.poll() is not None:
+                log("mpv skoncil (rc=%s) - ukoncuji session"
+                    % self.player.returncode)
                 break
 
     def _close(self):
@@ -329,7 +357,12 @@ class RtspSession(threading.Thread):
                 self.sock.close()
         except Exception:  # noqa: BLE001
             pass
-        xbmc.executebuiltin("PlayerControl(Stop)")
+        if self.player is not None and self.player.poll() is None:
+            self.player.terminate()
+            try:
+                self.player.wait(3)
+            except subprocess.TimeoutExpired:
+                self.player.kill()
 
 
 class MiceSink(object):
