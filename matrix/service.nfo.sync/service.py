@@ -398,29 +398,30 @@ class NFOSync(xbmc.Monitor):
                 return True
             if time.time() >= deadline:
                 break
-        if self.scanning():
-            # refresh pravděpodobně zahazen skenem -> počkat a zkusit znovu
-            log('%s: refresh blokován skenem, čekám na jeho konec' % label,
-                xbmc.LOGWARNING)
-            wait_library_idle(self)
-            if rpc(method, params) is None:
-                report('%s | refresh odmítnut (opakování)' % label)
-                return False
-            deadline = time.time() + REFRESH_TIMEOUT_S
-            while not self.abortRequested():
-                xbmc.sleep(REFRESH_POLL_S * 1000)
-                if poll():
-                    return True
-                if time.time() >= deadline:
-                    break
+        # Kodi refresh čas od času tiše zahodí (sk busy show-jobem,
+        # přehráváním, skenem) - jednou zkusit znovu po krátké pauze
+        log('%s: refresh nepotvrzen, opakuji za 30 s' % label)
+        xbmc.sleep(30 * 1000)
+        wait_no_playback(self)
+        if rpc(method, params) is None:
+            report('%s | refresh odmítnut (opakování)' % label)
+            return False
+        deadline = time.time() + REFRESH_TIMEOUT_S
+        while not self.abortRequested():
+            xbmc.sleep(REFRESH_POLL_S * 1000)
+            if poll():
+                return True
+            if time.time() >= deadline:
+                break
         report('%s | refresh nepotvrzen (timeout)' % label, xbmc.LOGWARNING)
         return False
 
     def refresh_movie(self, movie):
         # RefreshMovie (jako RefreshEpisode) mění movieid v DB -> poll přes
-        # stabilní identitu (cesta k souboru), ne přes staré id
+        # stabilní identitu (cesta k souboru); úspěch = nové ID nebo rating
         path = movie.get('file') or ''
         label = 'movie | %s' % movie.get('title')
+        baseline_id = movie.get('movieid')
 
         def find():
             res = rpc('VideoLibrary.GetMovies',
@@ -430,12 +431,16 @@ class NFOSync(xbmc.Monitor):
                     return m
             return None
 
+        def applied(row):
+            return row and ((row.get('rating') or 0) > 0
+                            or row.get('movieid') != baseline_id)
+
         for attempt in (1, 2):
             row = find()
             if not row:
                 report('%s | nenalezen v DB' % label)
                 return False
-            if (row.get('rating') or 0) > 0:
+            if applied(row):
                 return True
             if rpc('VideoLibrary.RefreshMovie',
                    {'movieid': row['movieid']}) is None:
@@ -444,8 +449,7 @@ class NFOSync(xbmc.Monitor):
             deadline = time.time() + REFRESH_TIMEOUT_S
             while not self.abortRequested():
                 xbmc.sleep(REFRESH_POLL_S * 1000)
-                row = find()
-                if row and (row.get('rating') or 0) > 0:
+                if applied(find()):
                     return True
                 if time.time() >= deadline:
                     break
@@ -461,23 +465,32 @@ class NFOSync(xbmc.Monitor):
         # i s epizodami smaže a znovu nedá (Stargate Universe, 1. 11. 2026)
         # a sken adresáře existující položky nepřescrapuje (The Expanse,
         # 0/62 i po touch nfo). Jediné dokázané primitivy jsou:
-        # - RefreshTVShow bez parametrů (show-level, ID zůstává)
+        # - RefreshTVShow bez parametrů (show-level, ID zůstává) - JEN když
+        #   show nemá rating; show-job totiž ještě chvíli běží po napsání
+        #   ratingu a zahodí následující RefreshEpisode (Panika E15,
+        #   2. 11. 2026)
         # - RefreshEpisode po jedné + poll identity (show+řada+epizoda,
         #   ID epizody se mění - 4259->8009)
         title = show.get('title')
-        if rpc('VideoLibrary.RefreshTVShow',
-               {'tvshowid': show['tvshowid']}) is None:
-            report('tvshow | %s | refresh odmítnut' % title)
-        # počkat, až show-level job dokončí (jinak může zahodit první
-        # RefreshEpisode) - potvrzení = show má rating
-        deadline = time.time() + 120
-        while not self.abortRequested() and time.time() < deadline:
-            fresh = rpc('VideoLibrary.GetTVShowDetails',
-                        {'tvshowid': show['tvshowid'],
-                         'properties': ['rating']}) or {}
-            if (fresh.get('tvshowdetails') or {}).get('rating'):
-                break
-            xbmc.sleep(REFRESH_POLL_S * 1000)
+        show_id = show['tvshowid']
+        fresh = rpc('VideoLibrary.GetTVShowDetails',
+                    {'tvshowid': show_id, 'properties': ['rating']}) or {}
+        if not (fresh.get('tvshowdetails') or {}).get('rating'):
+            log('tvshow %s: show-level refresh (nemá rating)' % title)
+            if rpc('VideoLibrary.RefreshTVShow',
+                   {'tvshowid': show_id}) is None:
+                report('tvshow | %s | refresh odmítnut' % title)
+            deadline = time.time() + 120
+            while not self.abortRequested() and time.time() < deadline:
+                fresh = rpc('VideoLibrary.GetTVShowDetails',
+                            {'tvshowid': show_id,
+                             'properties': ['rating']}) or {}
+                if (fresh.get('tvshowdetails') or {}).get('rating'):
+                    break
+                xbmc.sleep(REFRESH_POLL_S * 1000)
+            # show-job po ratingu ještě dobrigává obrázky - krátká pauza,
+            # ať první RefreshEpisode není zahazovaná
+            xbmc.sleep(60 * 1000)
         stale = [e for e in episodes if not (e.get('rating') or 0)]
         log('tvshow %s: %d/%d epizod potřebuje refresh'
             % (title, len(stale), len(episodes)))
@@ -485,11 +498,11 @@ class NFOSync(xbmc.Monitor):
         for idx, ep in enumerate(stale, 1):
             if self.abortRequested():
                 break
-            if refresh_episode(self, ep):
-                done += 1
-            if idx % 5 == 0 or idx == len(stale):
-                log('tvshow %s: %d/%d stale epizod zpracováno'
-                    % (title, idx, len(stale)))
+            ok = refresh_episode(self, ep)
+            done += ok
+            log('tvshow %s: S%02dE%02d %s (%d/%d)'
+                % (title, ep.get('season') or 0, ep.get('episode') or 0,
+                   'ok' if ok else 'TIMEOUT', idx, len(stale)))
         report('tvshow | %s | %d/%d stale epizod opraveno'
                % (title, done, len(stale)))
         return done == len(stale)
@@ -627,18 +640,23 @@ def write_report():
 
 def refresh_episode(monitor, episode):
     # poll přes stabilní identitu (show+řada+epizoda) - refresh epizody
-    # totiž mění episodeid v DB (4259->8009, pozorováno 1. 11. 2026)
+    # totiž mění episodeid v DB (4259->8009, pozorováno 1. 11. 2026).
+    # Úspěch = nové ID (refresh řádek vždy vytvoří znovu) NEBO rating > 0.
+    # Pozor: rating>0 nemůže být jediný signál - epizody bez hlasů na TMDb
+    # (A Town Called Panic S01E15-17, 2. 11. 2026) mají rating legálně 0.
     show_id = episode.get('tvshowid')
     season = episode.get('season') or 0
     number = episode.get('episode') or 0
+    baseline_id = episode.get('episodeid')
 
     def poll():
         eps = rpc('VideoLibrary.GetEpisodes',
                   {'tvshowid': show_id, 'season': season,
                    'properties': ['episode', 'rating']}) or {}
         for ep in eps.get('episodes') or []:
-            if ep.get('episode') == number and (ep.get('rating') or 0) > 0:
-                return True
+            if ep.get('episode') == number:
+                return ((ep.get('rating') or 0) > 0
+                        or ep.get('episodeid') != baseline_id)
         return False
 
     return monitor.refresh_verified(
