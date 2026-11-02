@@ -50,9 +50,15 @@ REPORT_FILE = os.path.join(PROFILE, 'repair-all.report')
 LOG_PREFIX = 'nfo-sync'
 DEBOUNCE_S = 10            # pauza po onScanFinished, ať scan úplně doběhne
 POLL_S = 5                 # perioda hlavní smyčky (marker + debounce)
-REFRESH_THROTTLE_MS = 400  # mezera mezi Refresh* JSON-RPC voláními
-REFRESH_TIMEOUT_S = 90     # čekání na dokončení refreshu jedné položky
+REFRESH_POLL_S = 3          # interval zjišťování dokončení refreshu
+REFRESH_TIMEOUT_S = 240     # čekání na refresh jedné položky (velké show =
+                            # fetch celého episode-listu přes TMDb trvá minuty)
+SCAN_SHOW_BASE_S = 120      # základní limit skenu adresáře jedné show
+SCAN_SHOW_EP_S = 12         # navíc na epizodu (scrape ~2-5 s/epizoda)
 RATING_RETRY_S = 24 * 3600  # cooldown opakované opravy bez hodnocení
+GUARD_QUIET_S = 15 * 60     # hlídky obnovit až po klidové periodě od poslední
+                            # úpravy nfo (jinak watchdog reaguje na naše zápisy
+                            # skenem, který blokuje refreshy - 1. 11. 2026)
 TIME_FMT = '%Y-%m-%d %H:%M:%S'
 
 # URL řádky, které sami zapisujeme = poznámka "toto .nfo už je identitní"
@@ -83,9 +89,9 @@ def log(msg, level=xbmc.LOGINFO):
     xbmc.log('%s: %s' % (LOG_PREFIX, msg), level)
 
 
-def report(line):
+def report(line, level=xbmc.LOGINFO):
     REPORT_LINES.append(line)
-    log(line)
+    log(line, level)
 
 
 def now_str():
@@ -107,6 +113,26 @@ def save_state(state):
             json.dump(state, fh)
     except Exception as err:
         log('state se nepodařilo uložit: %s' % err, xbmc.LOGWARNING)
+
+
+def wait_no_playback(monitor):
+    # Kodi během přehrávání MLČKY zahazuje všechny refreshy (vrátí OK,
+    # nic se nestane - TBBT 105/278, každá epizoda 240s timeout, 0 posun,
+    # pozorováno 1. 11. 2026). Během sledování tedy pass počká a po
+    # skončení přehrávání sam pokračuje. Na obrazovku nic nevyskakuje.
+    waited = 0
+    while playback_active() and not monitor.abortRequested():
+        xbmc.sleep(30 * 1000)
+        waited += 30
+        if waited % 300 == 0:
+            log('přehrává se už %d s, čekám na konec' % waited)
+
+
+def playback_active():
+    try:
+        return xbmc.Player().isPlaying()
+    except Exception:
+        return False
 
 
 def rpc(method, params=None):
@@ -329,47 +355,144 @@ def repair_show_nfo(show, episode_files):
 class NFOSync(xbmc.Monitor):
     def __init__(self):
         super(NFOSync, self).__init__()
-        self.scan_at = None   # čas posledního onScanFinished (debounce)
-        self.busy = False     # probíhá cyklus/repair-all
-        self.pending = {}     # (kind, id) -> deadline dokončení refreshu
+        self.scan_at = None     # čas posledního onScanFinished (debounce)
+        self.busy = False       # probíhá cyklus/repair-all
+        self.scan_active = False  # OnScanStarted..OnScanFinished (viz níže)
+        self.quiet_until = None   # kdy obnovit hlídky po klidové periodě
 
     def onScanFinished(self, database):
         if database == 'video':
             self.scan_at = time.time()
+            self.scan_active = False
 
     def onNotification(self, sender, method, data):
-        if method != 'VideoLibrary.OnUpdate':
-            return
-        try:
-            payload = json.loads(data)
-        except (TypeError, ValueError):
-            return
-        item = payload.get('item') or payload
-        kind = item.get('type')
-        item_id = item.get('id')
-        if kind in ('movie', 'tvshow', 'episode') and item_id is not None:
-            self.pending.pop((kind, item_id), None)
+        # Library.IsScanningVideo u tichých (JSON-RPC) skenů nelže - jediný
+        # spolehlivý signál "skenuje se" jsou notifikace skeneru
+        if method == 'VideoLibrary.OnScanStarted':
+            self.scan_active = True
+        elif method == 'VideoLibrary.OnScanFinished':
+            self.scan_active = False
+            if sender == 'videolibrary':
+                self.scan_at = time.time()
 
-    def refresh(self, kind, item_id):
-        methods = {'movie': ('VideoLibrary.RefreshMovie', 'movieid'),
-                   'tvshow': ('VideoLibrary.RefreshTVShow', 'tvshowid'),
-                   'episode': ('VideoLibrary.RefreshEpisode', 'episodeid')}
-        method, key = methods[kind]
-        if rpc(method, {key: item_id}) is None:
+    def scanning(self):
+        return (self.scan_active
+                or xbmc.getInfoLabel('Library.IsScanningVideo').lower()
+                == 'true')
+
+    def refresh_verified(self, method, params, poll, label):
+        # spustí refresh a SERIALIZOVANĚ čeká na skutečné dokončení pollingem
+        # obsahu (rating > 0). Důvody, proč ne jinak (1. 11. 2026):
+        # - VideoLibrary.OnUpdate po refreshu epizody NEdoCHÁZÍ (4383 falešných
+        #   timeoutů) a refresh epizody navíc mění její episodeid v DB
+        # - hromadné pálění refreshů vytváří backlog, který se pak s
+        #   běžícím skenem špatně seká (Kodi je pak tiše zahazuje)
+        wait_no_playback(self)
+        if rpc(method, params) is None:
+            report('%s | refresh odmítnut' % label)
             return False
-        self.pending[(kind, item_id)] = time.time() + REFRESH_TIMEOUT_S
-        xbmc.sleep(REFRESH_THROTTLE_MS)
-        return True
+        deadline = time.time() + REFRESH_TIMEOUT_S
+        while not self.abortRequested():
+            xbmc.sleep(REFRESH_POLL_S * 1000)
+            if poll():
+                return True
+            if time.time() >= deadline:
+                break
+        if self.scanning():
+            # refresh pravděpodobně zahazen skenem -> počkat a zkusit znovu
+            log('%s: refresh blokován skenem, čekám na jeho konec' % label,
+                xbmc.LOGWARNING)
+            wait_library_idle(self)
+            if rpc(method, params) is None:
+                report('%s | refresh odmítnut (opakování)' % label)
+                return False
+            deadline = time.time() + REFRESH_TIMEOUT_S
+            while not self.abortRequested():
+                xbmc.sleep(REFRESH_POLL_S * 1000)
+                if poll():
+                    return True
+                if time.time() >= deadline:
+                    break
+        report('%s | refresh nepotvrzen (timeout)' % label, xbmc.LOGWARNING)
+        return False
 
-    def wait_pending(self):
-        while self.pending and not self.abortRequested():
-            now = time.time()
-            for key in [k for k, deadline in self.pending.items()
-                        if deadline <= now]:
-                log('timeout čekání na refresh %s:%s' % key, xbmc.LOGWARNING)
-                del self.pending[key]
-            if self.pending:
-                xbmc.sleep(2000)
+    def refresh_movie(self, movie):
+        # RefreshMovie (jako RefreshEpisode) mění movieid v DB -> poll přes
+        # stabilní identitu (cesta k souboru), ne přes staré id
+        path = movie.get('file') or ''
+        label = 'movie | %s' % movie.get('title')
+
+        def find():
+            res = rpc('VideoLibrary.GetMovies',
+                      {'properties': ['file', 'rating']}) or {}
+            for m in res.get('movies') or []:
+                if (m.get('file') or '') == path:
+                    return m
+            return None
+
+        for attempt in (1, 2):
+            row = find()
+            if not row:
+                report('%s | nenalezen v DB' % label)
+                return False
+            if (row.get('rating') or 0) > 0:
+                return True
+            if rpc('VideoLibrary.RefreshMovie',
+                   {'movieid': row['movieid']}) is None:
+                report('%s | refresh odmítnut' % label)
+                return False
+            deadline = time.time() + REFRESH_TIMEOUT_S
+            while not self.abortRequested():
+                xbmc.sleep(REFRESH_POLL_S * 1000)
+                row = find()
+                if row and (row.get('rating') or 0) > 0:
+                    return True
+                if time.time() >= deadline:
+                    break
+            if attempt == 1 and self.scanning():
+                wait_library_idle(self)
+            else:
+                break
+        report('%s | refresh nepotvrzen (timeout)' % label, xbmc.LOGWARNING)
+        return False
+
+    def refresh_show_stale(self, show, episodes):
+        # POZOR: RefreshTVShow(refreshepisodes=true) je DESTRUKTIVNÍ - show
+        # i s epizodami smaže a znovu nedá (Stargate Universe, 1. 11. 2026)
+        # a sken adresáře existující položky nepřescrapuje (The Expanse,
+        # 0/62 i po touch nfo). Jediné dokázané primitivy jsou:
+        # - RefreshTVShow bez parametrů (show-level, ID zůstává)
+        # - RefreshEpisode po jedné + poll identity (show+řada+epizoda,
+        #   ID epizody se mění - 4259->8009)
+        title = show.get('title')
+        if rpc('VideoLibrary.RefreshTVShow',
+               {'tvshowid': show['tvshowid']}) is None:
+            report('tvshow | %s | refresh odmítnut' % title)
+        # počkat, až show-level job dokončí (jinak může zahodit první
+        # RefreshEpisode) - potvrzení = show má rating
+        deadline = time.time() + 120
+        while not self.abortRequested() and time.time() < deadline:
+            fresh = rpc('VideoLibrary.GetTVShowDetails',
+                        {'tvshowid': show['tvshowid'],
+                         'properties': ['rating']}) or {}
+            if (fresh.get('tvshowdetails') or {}).get('rating'):
+                break
+            xbmc.sleep(REFRESH_POLL_S * 1000)
+        stale = [e for e in episodes if not (e.get('rating') or 0)]
+        log('tvshow %s: %d/%d epizod potřebuje refresh'
+            % (title, len(stale), len(episodes)))
+        done = 0
+        for idx, ep in enumerate(stale, 1):
+            if self.abortRequested():
+                break
+            if refresh_episode(self, ep):
+                done += 1
+            if idx % 5 == 0 or idx == len(stale):
+                log('tvshow %s: %d/%d stale epizod zpracováno'
+                    % (title, idx, len(stale)))
+        report('tvshow | %s | %d/%d stale epizod opraveno'
+               % (title, done, len(stale)))
+        return done == len(stale)
 
 
 def set_addon_enabled(addon_id, enabled):
@@ -422,19 +545,22 @@ def set_clean_libraries(enabled):
         return False
 
 
-def wait_library_idle(max_wait_s=900):
+def wait_library_idle(monitor, max_wait_s=4 * 3600):
     # Kodi během aktivního skenu knihovny MLČKY odmítá všechny refreshy
     # (JSON-RPC vrátí OK, nic se nestane - pozorováno 1. 11. 2026, přes
-    # hodinu blokující sken z watchdog/autoupdate). Před refresh fází je
-    # nutné počkat, až sken doběhne.
+    # hodinu blokující sken z watchdog/autoupdate). IsScanningVideo u
+    # tichých (JSON-RPC) skenů ale nelže -> hlídá se i notifikace
+    # OnScanStarted/OnScanFinished (monitor.scan_active).
     waited = 0
-    while xbmc.getInfoLabel('Library.IsScanningVideo').lower() == 'true':
-        if waited >= max_wait_s or xbmc.abortRequested:
+    while monitor.scanning():
+        if waited >= max_wait_s or monitor.abortRequested():
             log('skenuje se i po %d s - refreshy můžou být ignorovány'
                 % waited, xbmc.LOGWARNING)
             return
         xbmc.sleep(5000)
         waited += 5
+        if waited % 300 == 0:
+            log('skenuje se už %d s, čekám na konec' % waited)
     if waited:
         log('skenovalo se %d s, pokračuji' % waited)
 
@@ -499,6 +625,28 @@ def write_report():
         log('report se nepodařilo zapsat: %s' % err, xbmc.LOGWARNING)
 
 
+def refresh_episode(monitor, episode):
+    # poll přes stabilní identitu (show+řada+epizoda) - refresh epizody
+    # totiž mění episodeid v DB (4259->8009, pozorováno 1. 11. 2026)
+    show_id = episode.get('tvshowid')
+    season = episode.get('season') or 0
+    number = episode.get('episode') or 0
+
+    def poll():
+        eps = rpc('VideoLibrary.GetEpisodes',
+                  {'tvshowid': show_id, 'season': season,
+                   'properties': ['episode', 'rating']}) or {}
+        for ep in eps.get('episodes') or []:
+            if ep.get('episode') == number and (ep.get('rating') or 0) > 0:
+                return True
+        return False
+
+    return monitor.refresh_verified(
+        'VideoLibrary.RefreshEpisode', {'episodeid': episode['episodeid']},
+        poll, 'episode | %s S%02dE%02d'
+        % (episode.get('showtitle'), season, number))
+
+
 def incremental(monitor):
     state = load_state()
     last = state.get('last_run')
@@ -514,14 +662,15 @@ def incremental(monitor):
                              ['title', 'file', 'dateadded', 'rating']):
         key = 'movie:%s' % movie.get('movieid')
         is_new = last < (movie.get('dateadded') or '')
-        no_rating = movie.get('rating') is None
+        # pozor: zastaralé položky mají rating 0.0 (z importu FULL nfo),
+        # ne None - proto nejen `is None`
+        no_rating = not (movie.get('rating') or 0)
         if not is_new and not (no_rating and should_retry(state, key)):
             continue
         action = repair_movie_nfo(movie)
         refresh_wanted = (action == 'rewritten'
                           or (action == 'identity' and no_rating))
-        refreshed = refresh_wanted and monitor.refresh('movie',
-                                                       movie['movieid'])
+        refreshed = refresh_wanted and monitor.refresh_movie(movie)
         changed = changed or refresh_wanted
         if no_rating:
             mark_retry(state, key)
@@ -534,7 +683,7 @@ def incremental(monitor):
     todo = {}
     for episode in episodes:
         is_new = last < (episode.get('dateadded') or '')
-        no_rating = episode.get('rating') is None
+        no_rating = not (episode.get('rating') or 0)
         key = 'episode:%s' % episode.get('episodeid')
         if is_new or (no_rating and should_retry(state, key)):
             todo[episode['episodeid']] = (episode, no_rating)
@@ -560,15 +709,15 @@ def incremental(monitor):
 
     for episode, no_rating in todo.values():
         action = repair_episode_nfo(episode)
-        refreshed = action == 'deleted' and monitor.refresh(
-            'episode', episode['episodeid'])
+        # epizoda bez .nfo už je čerstvě scrapeovaná ze skenu (má rating);
+        # refresh jen u .nfo-smazaných (jejich data přišla z FULL nfo arru)
+        refreshed = action == 'deleted' and refresh_episode(monitor, episode)
         changed = changed or bool(refreshed)
         report('episode | %s S%02dE%02d | %s%s'
                % (episode.get('showtitle'), episode.get('season') or 0,
                   episode.get('episode') or 0, action,
                   ' | refresh' if refreshed else ''))
 
-    monitor.wait_pending()
     if changed:
         export_library()
     state['last_run'] = now_str()
@@ -584,19 +733,31 @@ def repair_all(monitor, opts):
         return not only or only in (text or '').lower()
 
     changed = False
-    for movie in query_items('VideoLibrary.GetMovies',
-                             ['title', 'file', 'rating']):
-        if not matches(movie.get('title')):
-            continue
-        try:
-            action = repair_movie_nfo(movie)
-            if action == 'rewritten' or (action == 'identity'
-                                         and movie.get('rating') is None):
-                if monitor.refresh('movie', movie['movieid']):
-                    changed = True
-            report('movie | %s | %s' % (movie.get('title'), action))
-        except Exception as err:
-            report('movie | %s | chyba: %s' % (movie.get('title'), err))
+    if not opts.get('skip_movies'):
+        movies = [m for m in query_items('VideoLibrary.GetMovies',
+                                         ['title', 'file', 'rating'])
+                  if matches(m.get('title'))]
+        log('repair-all: filmů v rozsahu %d' % len(movies))
+        for idx, movie in enumerate(movies, 1):
+            wait_no_playback(monitor)
+            try:
+                action = repair_movie_nfo(movie)
+                if action == 'rewritten' or (action == 'identity'
+                                             and not (movie.get('rating')
+                                                      or 0)):
+                    ok = monitor.refresh_movie(movie)
+                    changed = changed or ok
+                    report('movie | %s | %s | %s'
+                           % (movie.get('title'), action,
+                              'ok' if ok else 'nepotvrzeno'))
+                else:
+                    report('movie | %s | %s' % (movie.get('title'), action))
+            except Exception as err:
+                report('movie | %s | chyba: %s' % (movie.get('title'), err))
+            if idx % 25 == 0:
+                log('repair-all: filmů hotovo %d/%d' % (idx, len(movies)))
+    else:
+        log('repair-all: filmy přeskočeny (skip_movies)')
 
     episodes = query_items('VideoLibrary.GetEpisodes',
                            ['title', 'showtitle', 'tvshowid', 'season',
@@ -605,52 +766,41 @@ def repair_all(monitor, opts):
     for episode in episodes:
         by_show.setdefault(episode.get('tvshowid'), []).append(episode)
 
-    for show in query_items('VideoLibrary.GetTVShows',
-                            ['title', 'file', 'rating']):
+    shows = [s for s in query_items('VideoLibrary.GetTVShows',
+                                    ['title', 'file', 'rating'])
+             if matches(s.get('title'))
+             or any(matches(e.get('showtitle')) or matches(e.get('title'))
+                    for e in by_show.get(s.get('tvshowid')) or [])]
+    log('repair-all: seriálů v rozsahu %d' % len(shows))
+    for idx, show in enumerate(shows, 1):
+        wait_no_playback(monitor)
         show_id = show.get('tvshowid')
-        all_eps = by_show.get(show_id) or []
-        # do rozsahu patří seriál podle vlastního názvu, názvu seriálu u
-        # epizod (filtr "only" na seriál) i názvů epizod (filtr na epizodu)
-        in_scope = (matches(show.get('title'))
-                    or any(matches(e.get('showtitle'))
-                           or matches(e.get('title')) for e in all_eps))
-        if not in_scope:
-            continue
-        scoped = [e for e in all_eps
-                  if matches(show.get('title'))
-                  or matches(e.get('showtitle')) or matches(e.get('title'))]
+        scoped = by_show.get(show_id) or []
         try:
+            # 1) identita nfo (show) + smazání epizodových nfo - PŘED
+            #    refreshem, ať se přescrapuje už čistý stav
             action = repair_show_nfo(show, [e.get('file') or ''
                                             for e in scoped])
-            if action == 'rewritten' or (action == 'identity'
-                                         and show.get('rating') is None):
-                if monitor.refresh('tvshow', show_id):
-                    changed = True
-            report('tvshow | %s | %s' % (show.get('title'), action))
+            nfo_fixed = [repair_episode_nfo(e) for e in scoped]
+            # 2) jeden dávkový refresh: show + všechny epizody; jen pokud
+            #    je co opravovat (chybí rating u show/epizod, nebo bylo
+            #    přepsáno nfo)
+            needs = (action == 'rewritten'
+                     or not (show.get('rating') or 0)
+                     or any(not (e.get('rating') or 0) for e in scoped)
+                     or any(a == 'deleted' for a in nfo_fixed))
+            refreshed = False
+            if needs:
+                refreshed = monitor.refresh_show_stale(show, scoped)
+                changed = changed or refreshed
+            report('tvshow | %s | %s%s'
+                   % (show.get('title'), action,
+                      ' | refresh' if needs else ''))
+            if idx % 10 == 0 or idx == len(shows):
+                log('repair-all: seriálů hotovo %d/%d' % (idx, len(shows)))
         except Exception as err:
             report('tvshow | %s | chyba: %s' % (show.get('title'), err))
-        for episode in scoped:
-            try:
-                act = repair_episode_nfo(episode)
-                if act == 'deleted' and monitor.refresh(
-                        'episode', episode['episodeid']):
-                    changed = True
-                if act == 'no-nfo' and monitor.refresh(
-                        'episode', episode['episodeid']):
-                    # bez .nfo se epizoda scrapovala při importu; staré
-                    # importy z nfo éry ale mají v DB anglická data ->
-                    # refresh jednou znovu (idempotentní)
-                    changed = True
-                    act = 'no-nfo | refresh'
-                report('episode | %s S%02dE%02d | %s'
-                       % (episode.get('showtitle'),
-                          episode.get('season') or 0,
-                          episode.get('episode') or 0, act))
-            except Exception as err:
-                report('episode | %s | chyba: %s'
-                       % (episode.get('showtitle'), err))
 
-    monitor.wait_pending()
     if changed:
         export_library()
     write_report()
@@ -665,11 +815,18 @@ def main():
     resume_guards()  # kdyby Kodi padl uprostřed cyklu (guards_paused ve state)
     log('start (profil: %s)' % PROFILE)
     while not monitor.abortRequested():
+        if (not monitor.busy and monitor.quiet_until is not None
+                and time.time() >= monitor.quiet_until):
+            # hlídky se nevracejí hned po cyklu: naše zápisy nfo by je
+            # vyvolaly ke skenu, který by blokoval refreshy (smyčka
+            # editace->watchdog->sken, pozorováno 1. 11. 2026)
+            monitor.quiet_until = None
+            resume_guards()
         if not monitor.busy and xbmcvfs.exists(MARKER_FILE):
             monitor.busy = True
             try:
                 pause_guards()
-                wait_library_idle()
+                wait_library_idle(monitor)
                 try:
                     opts = json.loads(vfs_read(MARKER_FILE))
                 except Exception:
@@ -678,7 +835,7 @@ def main():
             except Exception as err:
                 log('repair-all selhal: %s' % err, xbmc.LOGERROR)
             finally:
-                resume_guards()
+                monitor.quiet_until = time.time() + GUARD_QUIET_S
                 xbmcvfs.delete(MARKER_FILE)
                 monitor.busy = False
         elif (not monitor.busy and monitor.scan_at
@@ -687,15 +844,16 @@ def main():
             monitor.busy = True
             try:
                 pause_guards()
-                wait_library_idle()
+                wait_library_idle(monitor)
                 incremental(monitor)
             except Exception as err:
                 log('cyklus selhal: %s' % err, xbmc.LOGERROR)
             finally:
-                resume_guards()
+                monitor.quiet_until = time.time() + GUARD_QUIET_S
                 monitor.busy = False
         if monitor.waitForAbort(POLL_S):
             break
+    resume_guards()
     log('stop')
 
 
