@@ -13,7 +13,9 @@
 #      identitou epizody je SxxEyy v názvu souboru, epizodová identita v
 #      .nfo se scrapery nerozpozná; položku pak refreshne přes JSON-RPC,
 #   3. položky bez hodnocení bere jako poškozená metadata a opravuje je
-#      znovu (cooldown 24 h, ať nescrapuje pořád dokola),
+#      znovu (cooldown 24 h, ať nescrapuje pořád dokola); u seriálů
+#      navíc i když plot není český - FULL nfo od arru má rating i s
+#      anglickým plotem,
 #   4. po vyřízení fronty exportuje knihovnu zpět do .nfo
 #      (ExportLibrary, tichý separate-files export s overwrite), takže
 #      .nfo u média = čerstvá česká data.
@@ -92,6 +94,16 @@ def log(msg, level=xbmc.LOGINFO):
 def report(line, level=xbmc.LOGINFO):
     REPORT_LINES.append(line)
     log(line, level)
+
+
+CS_CHARS_RE = re.compile('[ěščřžýáíéúůťďňóĚŠČŘŽÝÁÍÉÚŮŤĎŇÓ]')
+
+
+def czech_text(text):
+    # hrubá detekce cs-CZ textu podle diakritiky: FULL nfo od arru má
+    # anglický plot i SE ratingem, takže samotné hodnocení show nezaručuje
+    # česká metadata (TBBT, The Expanse, The Office..., 3. 11. 2026)
+    return bool(CS_CHARS_RE.search(text or ''))
 
 
 def now_str():
@@ -460,38 +472,64 @@ class NFOSync(xbmc.Monitor):
         report('%s | refresh nepotvrzen (timeout)' % label, xbmc.LOGWARNING)
         return False
 
+    def refresh_show_level(self, show):
+        # plain RefreshTVShow - show-level (ID zůstává). Spouští se, když
+        # show nemá rating NEBO plot není český (FULL nfo od arru má rating
+        # i s anglickým plotem). Úspěch = rating se objeví NEBO se plot
+        # změní; nezmění-li se u show s ratingem, TMDb cs překlad
+        # pravděpodobně chybí (nelze rozlišit od tichého zahazení refreshu).
+        # Vrací True, pokud refresh skutečně proběhl (volající pak čeká,
+        # než show-job dobrigá, ať nezahodí následující RefreshEpisode).
+        title = show.get('title')
+        show_id = show['tvshowid']
+
+        def details():
+            return ((rpc('VideoLibrary.GetTVShowDetails',
+                         {'tvshowid': show_id,
+                          'properties': ['rating', 'plot']}) or {})
+                    .get('tvshowdetails') or {})
+
+        fresh = details()
+        plot_before = fresh.get('plot') or ''
+        has_rating = bool(fresh.get('rating') or 0)
+        if has_rating and czech_text(plot_before):
+            return False
+        log('tvshow %s: show-level refresh (%s)'
+            % (title, 'nemá rating' if not has_rating
+               else 'plot není český'))
+        if rpc('VideoLibrary.RefreshTVShow', {'tvshowid': show_id}) is None:
+            report('tvshow | %s | refresh odmítnut' % title)
+        deadline = time.time() + (120 if not has_rating else 45)
+        while not self.abortRequested() and time.time() < deadline:
+            fresh = details()
+            if ((fresh.get('rating') or 0)
+                    and ((fresh.get('plot') or '') != plot_before
+                         or czech_text(fresh.get('plot')))):
+                return True
+            xbmc.sleep(REFRESH_POLL_S * 1000)
+        if has_rating and (fresh.get('plot') or '') == plot_before:
+            log('tvshow %s: plot se nezměnil (rating už byl; cs překlad'
+                ' chybí?)' % title, xbmc.LOGWARNING)
+        return True
+
     def refresh_show_stale(self, show, episodes):
         # POZOR: RefreshTVShow(refreshepisodes=true) je DESTRUKTIVNÍ - show
         # i s epizodami smaže a znovu nedá (Stargate Universe, 1. 11. 2026)
         # a sken adresáře existující položky nepřescrapuje (The Expanse,
         # 0/62 i po touch nfo). Jediné dokázané primitivy jsou:
-        # - RefreshTVShow bez parametrů (show-level, ID zůstává) - JEN když
-        #   show nemá rating; show-job totiž ještě chvíli běží po napsání
-        #   ratingu a zahodí následující RefreshEpisode (Panika E15,
+        # - RefreshTVShow bez parametrů (show-level, ID zůstává) přes
+        #   refresh_show_level(); show-job totiž ještě chvíli běží po
+        #   napsání dat a zahodí následující RefreshEpisode (Panika E15,
         #   2. 11. 2026)
         # - RefreshEpisode po jedné + poll identity (show+řada+epizoda,
         #   ID epizody se mění - 4259->8009)
         title = show.get('title')
-        show_id = show['tvshowid']
-        fresh = rpc('VideoLibrary.GetTVShowDetails',
-                    {'tvshowid': show_id, 'properties': ['rating']}) or {}
-        if not (fresh.get('tvshowdetails') or {}).get('rating'):
-            log('tvshow %s: show-level refresh (nemá rating)' % title)
-            if rpc('VideoLibrary.RefreshTVShow',
-                   {'tvshowid': show_id}) is None:
-                report('tvshow | %s | refresh odmítnut' % title)
-            deadline = time.time() + 120
-            while not self.abortRequested() and time.time() < deadline:
-                fresh = rpc('VideoLibrary.GetTVShowDetails',
-                            {'tvshowid': show_id,
-                             'properties': ['rating']}) or {}
-                if (fresh.get('tvshowdetails') or {}).get('rating'):
-                    break
-                xbmc.sleep(REFRESH_POLL_S * 1000)
-            # show-job po ratingu ještě dobrigává obrázky - krátká pauza,
+        refreshed = self.refresh_show_level(show)
+        stale = [e for e in episodes if not (e.get('rating') or 0)]
+        if refreshed and stale:
+            # show-job po zápisu dat ještě dobrigává obrázky - krátká pauza,
             # ať první RefreshEpisode není zahazovaná
             xbmc.sleep(60 * 1000)
-        stale = [e for e in episodes if not (e.get('rating') or 0)]
         log('tvshow %s: %d/%d epizod potřebuje refresh'
             % (title, len(stale), len(episodes)))
         done = 0
@@ -717,12 +755,18 @@ def incremental(monitor):
     if shows_touched:
         shows = {s['tvshowid']: s for s in
                  query_items('VideoLibrary.GetTVShows',
-                             ['title', 'file', 'rating'])}
+                             ['title', 'file', 'rating', 'plot'])}
         for show_id, ep_files in shows_touched.items():
             show = shows.get(show_id) or {}
             action = repair_show_nfo(show, ep_files)
             if action == 'rewritten':
                 changed = True
+                if not czech_text(show.get('plot')):
+                    # Sonarr FULL nfo přepsal i show-level data - vrátit
+                    # česky; pauza ať show-job dobrigá, ať nezahodí
+                    # následující RefreshEpisode
+                    monitor.refresh_show_level(show)
+                    xbmc.sleep(60 * 1000)
             report('tvshow | %s | %s' % (show.get('title'), action))
 
     for episode, no_rating in todo.values():
@@ -785,7 +829,7 @@ def repair_all(monitor, opts):
         by_show.setdefault(episode.get('tvshowid'), []).append(episode)
 
     shows = [s for s in query_items('VideoLibrary.GetTVShows',
-                                    ['title', 'file', 'rating'])
+                                    ['title', 'file', 'rating', 'plot'])
              if matches(s.get('title'))
              or any(matches(e.get('showtitle')) or matches(e.get('title'))
                     for e in by_show.get(s.get('tvshowid')) or [])]
@@ -801,10 +845,11 @@ def repair_all(monitor, opts):
                                             for e in scoped])
             nfo_fixed = [repair_episode_nfo(e) for e in scoped]
             # 2) jeden dávkový refresh: show + všechny epizody; jen pokud
-            #    je co opravovat (chybí rating u show/epizod, nebo bylo
-            #    přepsáno nfo)
+            #    je co opravovat (chybí rating u show/epizod, není-li plot
+            #    český, nebo bylo přepsáno nfo)
             needs = (action == 'rewritten'
                      or not (show.get('rating') or 0)
+                     or not czech_text(show.get('plot'))
                      or any(not (e.get('rating') or 0) for e in scoped)
                      or any(a == 'deleted' for a in nfo_fixed))
             refreshed = False
