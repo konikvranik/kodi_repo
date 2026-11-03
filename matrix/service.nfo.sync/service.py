@@ -106,6 +106,16 @@ def czech_text(text):
     return bool(CS_CHARS_RE.search(text or ''))
 
 
+EN_SET_RE = re.compile(r'\b(collection|trilogy|saga|quadrilogy)\b', re.I)
+
+
+def en_set_name(name):
+    # anglický název kolekce: TMDb cs-CZ názvy mají tvar "X (kolekce)",
+    # anglické "X Collection" zůstávají z nepřeložených/starých scrapeů
+    # (Harry Potter Collection vs. Shrek (kolekce), 3. 11. 2026)
+    return bool(EN_SET_RE.search(name or ''))
+
+
 def now_str():
     return time.strftime(TIME_FMT)
 
@@ -430,35 +440,50 @@ class NFOSync(xbmc.Monitor):
 
     def refresh_movie(self, movie):
         # RefreshMovie (jako RefreshEpisode) mění movieid v DB -> poll přes
-        # stabilní identitu (cesta k souboru); úspěch = nové ID nebo rating
+        # stabilní identitu (cesta k souboru). Rating je jen proxy "čerstvých
+        # dat" - u filmu s EN názvem kolekce se polluje změna setu (cs-CZ
+        # scrape vrací "X (kolekce)", anglické "X Collection" vznikají ze
+        # starých scrapeů/nfo, 3. 11. 2026).
         path = movie.get('file') or ''
         label = 'movie | %s' % movie.get('title')
         baseline_id = movie.get('movieid')
 
         def find():
             res = rpc('VideoLibrary.GetMovies',
-                      {'properties': ['file', 'rating']}) or {}
+                      {'properties': ['file', 'rating', 'set']}) or {}
             for m in res.get('movies') or []:
                 if (m.get('file') or '') == path:
                     return m
             return None
 
-        def applied(row):
-            return row and ((row.get('rating') or 0) > 0
-                            or row.get('movieid') != baseline_id)
+        row = find()
+        if not row:
+            report('%s | nenalezen v DB' % label)
+            return False
+        has_rating = bool(row.get('rating') or 0)
+        set_before = row.get('set') or ''
+        fix_set = en_set_name(set_before)
+        if has_rating and not fix_set:
+            return True
 
-        for attempt in (1, 2):
-            row = find()
-            if not row:
-                report('%s | nenalezen v DB' % label)
+        def applied(cur):
+            if not cur:
                 return False
-            if applied(row):
-                return True
+            if fix_set:
+                return ((cur.get('set') or '') != set_before
+                        or not en_set_name(cur.get('set')))
+            return ((cur.get('rating') or 0) > 0
+                    or cur.get('movieid') != baseline_id)
+
+        for attempt in ((1, 2) if not fix_set else (1,)):
+            # fix_set: scrape proběhne v sekundách, set se v Kodi 21 při
+            # refreshi nemění (čte se z FULL nfo zapsaného exportem) -
+            # dlouhý poll+retry by za 227 filmů zahodil hodiny
             if rpc('VideoLibrary.RefreshMovie',
                    {'movieid': row['movieid']}) is None:
                 report('%s | refresh odmítnut' % label)
                 return False
-            deadline = time.time() + REFRESH_TIMEOUT_S
+            deadline = time.time() + (30 if fix_set else REFRESH_TIMEOUT_S)
             while not self.abortRequested():
                 xbmc.sleep(REFRESH_POLL_S * 1000)
                 if applied(find()):
@@ -469,7 +494,10 @@ class NFOSync(xbmc.Monitor):
                 wait_library_idle(self)
             else:
                 break
-        report('%s | refresh nepotvrzen (timeout)' % label, xbmc.LOGWARNING)
+        report('%s | %s' % (label,
+                            'set se nezměnil (cs překlad kolekce chybí?)'
+                            if fix_set else 'refresh nepotvrzen (timeout)'),
+               xbmc.LOGWARNING)
         return False
 
     def refresh_show_level(self, show):
@@ -797,7 +825,7 @@ def repair_all(monitor, opts):
     changed = False
     if not opts.get('skip_movies'):
         movies = [m for m in query_items('VideoLibrary.GetMovies',
-                                         ['title', 'file', 'rating'])
+                                         ['title', 'file', 'rating', 'set'])
                   if matches(m.get('title'))]
         log('repair-all: filmů v rozsahu %d' % len(movies))
         for idx, movie in enumerate(movies, 1):
@@ -805,8 +833,8 @@ def repair_all(monitor, opts):
             try:
                 action = repair_movie_nfo(movie)
                 if action == 'rewritten' or (action == 'identity'
-                                             and not (movie.get('rating')
-                                                      or 0)):
+                                             and (not (movie.get('rating') or 0)
+                                                  or en_set_name(movie.get('set')))):
                     ok = monitor.refresh_movie(movie)
                     changed = changed or ok
                     report('movie | %s | %s | %s'
